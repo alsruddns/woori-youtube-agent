@@ -18,7 +18,7 @@ def authorize(client_secrets: Path, token_file: Path, *, port: int = 0) -> Any:
         from google_auth_oauthlib.flow import InstalledAppFlow
     except ImportError as exc:
         raise RuntimeError("Install the Google API client dependencies first.") from exc
-    scopes = ["https://www.googleapis.com/auth/youtube.upload"]
+    scopes = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube.readonly"]
     credentials = Credentials.from_authorized_user_file(str(token_file), scopes) if token_file.exists() else None
     if not credentials or not credentials.valid:
         if credentials and credentials.expired and credentials.refresh_token:
@@ -29,6 +29,17 @@ def authorize(client_secrets: Path, token_file: Path, *, port: int = 0) -> Any:
         token_file.parent.mkdir(parents=True, exist_ok=True)
         token_file.write_text(credentials.to_json(), encoding="utf-8")
     return credentials
+
+
+def verify_channel(credentials: Any, expected_channel_id: str) -> None:
+    if not expected_channel_id.strip():
+        raise PublishBlocked("Expected YouTube channel ID must be configured before upload.")
+    from googleapiclient.discovery import build
+    response = build("youtube", "v3", credentials=credentials).channels().list(
+        part="id,snippet", mine=True, maxResults=50).execute()
+    matches = [item for item in response.get("items", []) if item.get("id") == expected_channel_id]
+    if len(matches) != 1:
+        raise PublishBlocked("Authenticated YouTube channel does not match the configured channel ID.")
 
 
 def upload_video(path: Path, metadata: dict[str, Any], credentials: Any, *, privacy_status: str = "private", publish_at: datetime | None = None, public_preflight_passed: bool = False, session_file: Path | None = None) -> str:

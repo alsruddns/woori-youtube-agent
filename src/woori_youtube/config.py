@@ -27,6 +27,7 @@ class Settings:
     codex_command: str = os.getenv("CODEX_COMMAND", "codex")
     codex_enabled: bool = os.getenv("CODEX_ENABLED", "false").lower() == "true"
     codex_timeout_seconds: int = int(os.getenv("CODEX_TIMEOUT_SECONDS", "1800"))
+    youtube_channel_id: str = os.getenv("US_YOUTUBE_CHANNEL_ID", "")
     youtube_enabled: bool = os.getenv("YOUTUBE_ENABLED", "false").lower() == "true"
     youtube_schedule_enabled: bool = os.getenv("YOUTUBE_SCHEDULE_ENABLED", "false").lower() == "true"
     youtube_public_preflight_passed: bool = os.getenv("YOUTUBE_PUBLIC_PREFLIGHT_PASSED", "false").lower() == "true"

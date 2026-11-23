@@ -8,3 +8,8 @@ data/
 artifacts/
 *.db
 token*.json
+
+# OAuth clients and resumable upload session URLs
+client_secret*.json
+client_secrets*.json
+*.upload-session.json

@@ -17,6 +17,9 @@ def main() -> None:
     research = sub.add_parser("research")
     research.add_argument("--channel", default="us-economy")
     research.add_argument("--date", default=date.today().isoformat())
+    trends = sub.add_parser("trends")
+    trends.add_argument("--channel", default="us-economy")
+    trends.add_argument("--region", default="US")
     sub.add_parser("status")
     args = parser.parse_args()
     if args.command == "research":
@@ -26,6 +29,18 @@ def main() -> None:
         print(f"Collected {len(package.items)} items; gate={'PASS' if not errors else 'BLOCK'}")
         for error in errors:
             print(f"- {error}")
+    elif args.command == "trends":
+        from sqlalchemy import create_engine
+        from .trends import collect
+        if not settings.database_url.startswith("postgresql"):
+            raise RuntimeError("Trends collection requires a migrated PostgreSQL database")
+        channel = load_channels(settings.channels_file).get(args.channel)
+        if channel is None or not channel.enabled or channel.country != args.region:
+            raise ValueError("Channel must be enabled and match the requested region")
+        items = collect(create_engine(settings.database_url, pool_pre_ping=True), args.channel, args.region)
+        for item in items:
+            print(f"{item.volume_raw or '?':>10}  {item.keyword}")
+        print(f"Collected {len(items)} trends; RSS period and active status are unspecified.")
     else:
         store = JobStore(Path("data/woori_youtube.db"))
         for row in store.list_jobs():

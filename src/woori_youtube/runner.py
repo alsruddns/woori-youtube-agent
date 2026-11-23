@@ -14,7 +14,7 @@ from .models import JobStatus
 from .pipeline import PipelineBlocked, run_research
 from .script import run_codex, script_prompt, validate_script
 from .store import JobStore
-from .youtube import PublishBlocked, authorize, upload_thumbnail, upload_video
+from .youtube import PublishBlocked, authorize, upload_thumbnail, upload_video, verify_channel
 
 logger = logging.getLogger("woori_youtube")
 
@@ -80,6 +80,7 @@ def run_daily(channel_id: str = "us-economy", run_date: date | None = None) -> s
             if (settings.youtube_privacy_status == "public" or settings.youtube_schedule_enabled) and not settings.youtube_public_preflight_passed:
                 raise PublishBlocked("Complete a controlled public-upload preflight in YouTube Studio before enabling public or scheduled uploads.")
             credentials = authorize(settings.youtube_client_secrets_file, settings.youtube_token_file)
+            verify_channel(credentials, settings.youtube_channel_id)
             video_id = upload_video(video_path, raw, credentials, privacy_status=settings.youtube_privacy_status,
                                     publish_at=_scheduled_publish_time(channel, run_date) if settings.youtube_schedule_enabled else None,
                                     public_preflight_passed=settings.youtube_public_preflight_passed)

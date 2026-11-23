@@ -1,3 +1,5 @@
+> **Development status:** the legacy daily pipeline is still economy/politics based and enforces one job per day. It does not satisfy the Now Trends production requirements and must not be enabled for unattended production. The Trends collector below is an independent, partial implementation. No video or upload readiness is implied.
+
 # Woori YouTube Agent
 
 Local-first automation for daily US economy and politics news videos. Channel settings are locale-based so additional languages and country channels can be enabled without changing the pipeline. The US English channel is enabled; Korean is scaffolded and disabled pending Korean source feeds and editorial settings.
@@ -33,3 +35,17 @@ uvicorn woori_youtube.api:app --host 127.0.0.1 --port 8000
 ```
 
 See `docs/operations.md` for credential setup, channel expansion, retries, and preflight steps.
+
+## Experimental Google Trends collection
+
+After configuring a working PostgreSQL connection and applying Alembic migrations, run:
+
+```powershell
+$env:PYTHONPATH = "src"
+.\.venv\Scripts\python.exe -m alembic upgrade head
+.\.venv\Scripts\python.exe -m woori_youtube.cli trends --channel us-economy --region US
+```
+
+Each successful collection stores a snapshot and each fetch failure stores an error. The public RSS endpoint does not establish a 4-hour or 24-hour window or active status; these fields are not inferred. The volume value is the lower bound of a displayed bucket, not an exact count. The collector is not yet connected to topic selection or scheduling. Existing per-day job and upload constraints remain in place.
+
+Uploads additionally require `US_YOUTUBE_CHANNEL_ID` to match the authenticated channel. Changing OAuth scopes may require a new interactive authorization; do not delete an existing token without reviewing it first. Public publishing remains opt-in.
