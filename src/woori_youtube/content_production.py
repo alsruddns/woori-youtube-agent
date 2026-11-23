@@ -40,7 +40,8 @@ def render_content(kind, topics, research, script, assets, output_dir: Path, *, 
         with wave.open(str(path), "rb") as wav:
             seconds += wav.getnframes() / wav.getframerate()
     report = {"content_type": kind.value, "narration_seconds": seconds,
-              "editorial_review_required": True, "automated_media_checks_passed": False}
+              "editorial_review_required": True, "automated_media_checks_passed": False,
+              "visual_assets": assets}
     report_path = output_dir / "production.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     if not spec.min_seconds <= seconds <= spec.max_seconds:

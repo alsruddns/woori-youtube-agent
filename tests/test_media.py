@@ -54,6 +54,33 @@ def test_subtitles_can_be_exported_without_burning_into_video(tmp_path, monkeypa
     assert "subtitles=" not in calls[0][calls[0].index("-vf") + 1]
 
 
+def test_broll_is_labeled_and_uses_only_narration_audio(tmp_path, monkeypatch):
+    from PIL import Image
+    image = tmp_path / "card.png"
+    Image.new("RGB", (360, 640)).save(image)
+    stock = tmp_path / "stock.mp4"
+    stock.write_bytes(b"video")
+    audio = tmp_path / "voice.wav"
+    with wave.open(str(audio), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(8000)
+        wav.writeframes(b"\0\0" * 16000)
+    broll = {"path": str(stock), "creator": "Videographer", "rights_type": "licensed", "rights_verified": True,
+             "license": "License", "attribution": "Videographer", "source_url": "https://example.com/clip",
+             "rights_url": "https://example.com/license", "depiction": "illustrative"}
+    asset = {"path": str(image), "creator": "Creator", "rights_type": "original", "rights_verified": True,
+             "broll": broll}
+    calls = []
+    monkeypatch.setattr(media.shutil, "which", lambda _: "ffmpeg")
+    monkeypatch.setattr(media.subprocess, "run", lambda args, **kwargs: calls.append(args))
+    monkeypatch.setattr(media, "_probe_duration", lambda *args: 2.0)
+    media.render_video({"title": "Test", "scenes": [{"narration": "Test", "asset": asset}]},
+                       [audio], tmp_path / "final.mp4", width=360, height=640, burn_subtitles=False)
+    assert "1:a:0" in calls[0] and "2:a:0" not in calls[0]
+    assert (tmp_path / "render-scenes/001-stock-label.png").exists()
+
+
 def test_video_quality_checks_duration_resolution_and_audio(tmp_path, monkeypatch):
     video = tmp_path / "video.mp4"
     video.write_bytes(b"x" * 100000)

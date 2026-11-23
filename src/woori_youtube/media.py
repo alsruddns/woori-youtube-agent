@@ -123,12 +123,39 @@ def render_video(script: dict[str, Any], audio_files: list[Path], output: Path, 
         fade_out = max(0.0, duration - 0.25)
         filters = (f"zoompan=z='min(zoom+0.00035,1.08)':d=1:s={width}x{height}:fps=30,"
                    f"fade=t=in:st=0:d=0.25,fade=t=out:st={fade_out:.3f}:d=0.25")
-        if burn_subtitles:
-            filters += f",subtitles='{subtitle_filter_path}':force_style='{style}'"
-        subprocess.run([ffmpeg, "-y", "-loop", "1", "-i", str(still_tmp), "-i", str(audio), "-c:v", "libx264",
-                        "-vf", filters,
-                        "-r", "30", "-c:a", "aac", "-b:a", "192k", "-pix_fmt", "yuv420p", "-shortest", str(clip)],
-                       check=True, capture_output=True)
+        subtitles_filter = f"subtitles='{subtitle_filter_path}':force_style='{style}'"
+        broll = asset.get("broll") if asset else None
+        inputs = [ffmpeg, "-y", "-loop", "1", "-i", str(still_tmp), "-i", str(audio)]
+        if broll:
+            from .assets import validate_scene_assets
+            errors = validate_scene_assets([{"asset": broll}], allow_video=True)
+            if errors:
+                raise ValueError("B-roll gate: " + "; ".join(errors))
+            if Path(broll["path"]).suffix.lower() not in {".mp4", ".mov", ".webm"}:
+                raise ValueError("B-roll must be a video file.")
+            cutaway = min(duration, 3.0, _probe_duration(Path(broll["path"]), ffmpeg))
+            label = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+            label_draw = ImageDraw.Draw(label)
+            label_draw.rectangle((0, 0, width, max(50, height // 24)), fill=(0, 0, 0, 205))
+            try:
+                label_font = ImageFont.truetype("arialbd.ttf", max(18, width // 40))
+            except OSError:
+                label_font = ImageFont.load_default(size=max(18, width // 40))
+            label_draw.text((20, 8), "ILLUSTRATIVE STOCK FOOTAGE", font=label_font, fill="white")
+            label_path = temp / f"{index:03d}-stock-label.png"
+            label.save(label_path)
+            inputs += ["-i", str(broll["path"]), "-loop", "1", "-i", str(label_path)]
+            # Use no source audio: the original narration is the only audio input.
+            graph = (f"[0:v]{filters}[bg];[2:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
+                     f"crop={width}:{height},fps=30,setpts=PTS-STARTPTS[stock];"
+                     f"[bg][stock]overlay=0:0:enable='lt(t,{cutaway:.3f})':eof_action=pass:repeatlast=0[tmp];"
+                     f"[tmp][3:v]overlay=0:0:enable='lt(t,{cutaway:.3f})'[labeled];"
+                     f"[labeled]{subtitles_filter if burn_subtitles else 'null'}[v]")
+            video_args = ["-filter_complex", graph, "-map", "[v]", "-map", "1:a:0"]
+        else:
+            video_args = ["-vf", filters + ("," + subtitles_filter if burn_subtitles else "")]
+        subprocess.run(inputs + video_args + ["-c:v", "libx264", "-r", "30", "-c:a", "aac", "-b:a", "192k",
+                        "-pix_fmt", "yuv420p", "-shortest", str(clip)], check=True, capture_output=True)
         rendered.append(clip)
         elapsed += _probe_duration(clip, ffmpeg)
     manifest = temp / "concat.txt"

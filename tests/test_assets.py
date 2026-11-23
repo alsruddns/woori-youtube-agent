@@ -15,3 +15,17 @@ def test_assets_require_review_and_evidence(tmp_path):
     assert any("rights review" in error for error in errors)
     assert any("attribution" in error for error in errors)
     assert validate_scene_assets([{}])
+
+
+def test_stock_video_requires_rights_and_illustrative_label(tmp_path):
+    image = tmp_path / "card.png"
+    image.write_bytes(b"image")
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"video")
+    asset = {"path": str(image), "creator": "Creator", "rights_type": "original", "rights_verified": True,
+             "broll": {"path": str(clip), "creator": "Videographer", "rights_type": "licensed",
+                       "rights_verified": True, "license": "Pexels", "attribution": "Creator via Pexels",
+                       "source_url": "https://example.com/clip", "rights_url": "https://example.com/license"}}
+    assert any("illustrative" in error for error in validate_scene_assets([{"asset": asset}]))
+    asset["broll"]["depiction"] = "illustrative"
+    assert validate_scene_assets([{"asset": asset}]) == []
