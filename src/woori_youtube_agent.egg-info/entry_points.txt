@@ -1,0 +1,2 @@
+[console_scripts]
+woori-youtube = woori_youtube.cli:main

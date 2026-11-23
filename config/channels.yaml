@@ -1,0 +1,41 @@
+channels:
+  us-economy:
+    locale: en-US
+    language_name: English
+    country: US
+    timezone: America/New_York
+    categories: [economy, politics]
+    disclaimer: "This is news commentary, not investment advice."
+    enabled: true
+    target_minutes: 15
+    tts:
+      engine: kokoro
+      language_code: a
+      voice: af_heart
+    rss_feeds:
+      - url: https://www.federalreserve.gov/feeds/press_all.xml
+        category: economy
+      - url: https://www.bls.gov/feed/news_release.rss
+        category: economy
+      - url: https://www.bea.gov/news/rss.xml
+        category: economy
+      - url: https://home.treasury.gov/news/press-releases/rss.xml
+        category: economy
+      - url: https://www.sec.gov/news/pressreleases.rss
+        category: economy
+      - url: https://www.whitehouse.gov/briefings-statements/feed/
+        category: politics
+  kr-economy-politics:
+    locale: ko-KR
+    language_name: Korean
+    country: KR
+    timezone: Asia/Seoul
+    categories: [economy, politics]
+    disclaimer: "이 콘텐츠는 뉴스 해설이며 투자 조언이 아닙니다."
+    enabled: false
+    target_minutes: 15
+    rss_feeds: []
+    tts:
+      engine: external-korean-provider
+      language_code: ko-KR
+      voice: pending-review
