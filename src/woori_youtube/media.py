@@ -63,7 +63,7 @@ def create_chart(values: list[tuple[str, float]], output: Path, *, title: str, l
     return output
 
 
-def render_video(script: dict[str, Any], audio_files: list[Path], output: Path, *, ffmpeg: str = "ffmpeg", width: int = 1920, height: int = 1080) -> Path:
+def render_video(script: dict[str, Any], audio_files: list[Path], output: Path, *, ffmpeg: str = "ffmpeg", width: int = 1920, height: int = 1080, burn_subtitles: bool = True) -> Path:
     if shutil.which(ffmpeg) is None:
         raise RuntimeError(f"FFmpeg executable not found: {ffmpeg}")
     scenes = script["scenes"]
@@ -88,14 +88,16 @@ def render_video(script: dict[str, Any], audio_files: list[Path], output: Path, 
                 raise ValueError("Asset gate: " + "; ".join(asset_errors))
             with Image.open(asset["path"]) as source:
                 image = ImageOps.fit(source.convert("RGB"), (width, height))
-            overlay = Image.new("RGBA", (width, height), (0, 0, 0, 105))
-            image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+            if not asset.get("precomposed"):
+                overlay = Image.new("RGBA", (width, height), (0, 0, 0, 105))
+                image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
         else:
             image = Image.new("RGB", (width, height), "#101827")
         draw = ImageDraw.Draw(image)
         # Visual direction is for production, not audience-facing caption text.
         text = str(scene.get("on_screen_text", ""))[:200]
-        draw.text((90, 100), script.get("title", "Daily Briefing"), fill="white")
+        if not asset or not asset.get("precomposed"):
+            draw.text((90, 100), script.get("title", "Daily Briefing"), fill="white")
         if type(scene.get("rank")) is int and 1 <= scene["rank"] <= 5:
             try:
                 rank_font = ImageFont.truetype("arialbd.ttf", max(36, width // 6))
@@ -117,8 +119,14 @@ def render_video(script: dict[str, Any], audio_files: list[Path], output: Path, 
         srt_path.write_text(_srt(scene_cues), encoding="utf-8")
         subtitle_filter_path = str(srt_path.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
         style = "Fontsize=11,Outline=1,Alignment=2,MarginV=48,MarginL=30,MarginR=30" if height > width else "Fontsize=22,Outline=2,MarginV=45"
+        # Slow camera movement and short transitions; captions remain screen-anchored.
+        fade_out = max(0.0, duration - 0.25)
+        filters = (f"zoompan=z='min(zoom+0.00035,1.08)':d=1:s={width}x{height}:fps=30,"
+                   f"fade=t=in:st=0:d=0.25,fade=t=out:st={fade_out:.3f}:d=0.25")
+        if burn_subtitles:
+            filters += f",subtitles='{subtitle_filter_path}':force_style='{style}'"
         subprocess.run([ffmpeg, "-y", "-loop", "1", "-i", str(still_tmp), "-i", str(audio), "-c:v", "libx264",
-                        "-tune", "stillimage", "-vf", f"subtitles='{subtitle_filter_path}':force_style='{style}'",
+                        "-vf", filters,
                         "-r", "30", "-c:a", "aac", "-b:a", "192k", "-pix_fmt", "yuv420p", "-shortest", str(clip)],
                        check=True, capture_output=True)
         rendered.append(clip)

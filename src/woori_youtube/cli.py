@@ -46,6 +46,7 @@ def main() -> None:
     content_render.add_argument("--script", required=True, type=Path)
     content_render.add_argument("--assets", required=True, type=Path)
     content_render.add_argument("--output-dir", required=True, type=Path)
+    content_render.add_argument("--thumbnail-asset", type=Path)
     content_plan = sub.add_parser("content-plan")
     content_plan.add_argument("--channel", default="us-economy")
     content_plan.add_argument("--collection-id", required=True, type=int)
@@ -115,7 +116,8 @@ def main() -> None:
         result = render_content(payload["content_type"], payload["topics"], payload["research"],
             json.loads(args.script.read_text(encoding="utf-8")), json.loads(args.assets.read_text(encoding="utf-8")),
             args.output_dir, ffmpeg=settings.ffmpeg_bin, period=payload.get("period"),
-            ranking_basis=payload.get("ranking_basis"))
+            ranking_basis=payload.get("ranking_basis"),
+            thumbnail_asset=json.loads(args.thumbnail_asset.read_text(encoding="utf-8")) if args.thumbnail_asset else None)
         print(json.dumps(result, indent=2))
     elif args.command == "event-render":
         from .event_production import render_event

@@ -36,6 +36,24 @@ def test_long_cue_is_split_within_original_audio_bounds():
     assert " ".join(cue[2] for cue in cues) == "one two three four five six seven eight nine ten"
 
 
+def test_subtitles_can_be_exported_without_burning_into_video(tmp_path, monkeypatch):
+    audio = tmp_path / "voice.wav"
+    with wave.open(str(audio), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(8000)
+        wav.writeframes(b"\0\0" * 16000)
+    calls = []
+    monkeypatch.setattr(media.shutil, "which", lambda _: "ffmpeg")
+    monkeypatch.setattr(media.subprocess, "run", lambda args, **kwargs: calls.append(args))
+    monkeypatch.setattr(media, "_probe_duration", lambda *args: 2.0)
+    output = tmp_path / "video.mp4"
+    media.render_video({"title": "Test", "scenes": [{"narration": "Test narration", "visual": "Card"}]},
+                       [audio], output, width=360, height=640, burn_subtitles=False)
+    assert "Test narration" in output.with_suffix(".srt").read_text(encoding="utf-8")
+    assert "subtitles=" not in calls[0][calls[0].index("-vf") + 1]
+
+
 def test_video_quality_checks_duration_resolution_and_audio(tmp_path, monkeypatch):
     video = tmp_path / "video.mp4"
     video.write_bytes(b"x" * 100000)

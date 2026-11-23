@@ -31,7 +31,8 @@ def run_once(engine, channel: str, region: str, kind: ContentType, worker: str,
             raise ValueError("Prepared input does not match the persisted plan")
         queue.transition(plan_id, worker, status="running", stage="rendering")
         result = render_content(kind, payload["topics"], payload["research"], payload["script"],
-                                payload["assets"], output_root / plan_id / f"attempt-{job['attempts']}", ffmpeg=ffmpeg)
+                                payload["assets"], output_root / plan_id / f"attempt-{job['attempts']}", ffmpeg=ffmpeg,
+                                thumbnail_asset=payload.get("thumbnail_asset"))
         queue.ready_for_review(plan_id, worker, script=payload["script"], video_path=result["video"],
                                duration_seconds=result["video_seconds"])
     except Exception as exc:
