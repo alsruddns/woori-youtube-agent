@@ -13,9 +13,19 @@ def test_render_subtitles_use_actual_audio_duration(tmp_path, monkeypatch):
         wav.writeframes(b"\0\0" * 16000)
     monkeypatch.setattr(media.shutil, "which", lambda _: "ffmpeg")
     monkeypatch.setattr(media.subprocess, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(media, "_probe_duration", lambda *args: 2.0)
     output = tmp_path / "final.mp4"
     media.render_video({"title": "Test", "scenes": [{"narration": "One two three", "visual": "Card", "duration_seconds": 60}]}, [audio], output, width=640, height=360)
     assert "00:00:00,000 --> 00:00:02,000" in output.with_suffix(".srt").read_text(encoding="utf-8")
+
+
+def test_tts_chunk_cues_follow_measured_boundaries(tmp_path):
+    audio = tmp_path / "voice.wav"
+    audio.with_suffix(".timings.json").write_text(json.dumps([
+        {"start": 0, "end": 0.75, "text": "First sentence."},
+        {"start": 0.75, "end": 2, "text": "Second sentence."}]), encoding="utf-8")
+    assert media._scene_cues(audio, "First sentence. Second sentence.", 2) == [
+        (0.0, 0.75, "First sentence."), (0.75, 2.0, "Second sentence.")]
 
 
 def test_video_quality_checks_duration_resolution_and_audio(tmp_path, monkeypatch):
@@ -24,9 +34,9 @@ def test_video_quality_checks_duration_resolution_and_audio(tmp_path, monkeypatc
     monkeypatch.setattr(media.shutil, "which", lambda _: "ffprobe")
     def probe(duration, streams):
         monkeypatch.setattr(media.subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=0, stdout=json.dumps({"format":{"duration":duration},"streams":streams})))
-    probe(600, [{"codec_type":"video","width":1920,"height":1080},{"codec_type":"audio"}])
+    probe(600, [{"codec_type":"video","width":1920,"height":1080,"avg_frame_rate":"30/1"},{"codec_type":"audio"}])
     assert media.validate_video(video) == []
-    probe(1081, [{"codec_type":"video","width":1280,"height":720}])
+    probe(1081, [{"codec_type":"video","width":1280,"height":720,"avg_frame_rate":"30/1"}])
     errors = media.validate_video(video)
     assert len(errors) == 3
     assert any("exceeds" in x for x in errors)

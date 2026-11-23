@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from datetime import date
 from pathlib import Path
 
@@ -29,6 +30,14 @@ def main() -> None:
     worker = sub.add_parser("trend-worker-once")
     worker.add_argument("--channel", default="us-economy")
     worker.add_argument("--worker", required=True)
+    event_script = sub.add_parser("event-script")
+    event_script.add_argument("--research", required=True, type=Path)
+    event_script.add_argument("--output", required=True, type=Path)
+    event_render = sub.add_parser("event-render")
+    event_render.add_argument("--research", required=True, type=Path)
+    event_render.add_argument("--script", required=True, type=Path)
+    event_render.add_argument("--assets", required=True, type=Path)
+    event_render.add_argument("--output-dir", required=True, type=Path)
     sub.add_parser("status")
     args = parser.parse_args()
     if args.command == "research":
@@ -43,6 +52,29 @@ def main() -> None:
         credentials = authorize(settings.youtube_client_secrets_file, settings.youtube_token_file)
         verify_channel(credentials, settings.youtube_channel_id)
         print("Authenticated YouTube channel matches configured ID.")
+    elif args.command == "event-render":
+        from .event_production import render_event
+        result = render_event(json.loads(args.research.read_text(encoding="utf-8")),
+                              json.loads(args.script.read_text(encoding="utf-8")),
+                              json.loads(args.assets.read_text(encoding="utf-8")),
+                              args.output_dir, ffmpeg=settings.ffmpeg_bin)
+        print(json.dumps(result, indent=2))
+    elif args.command == "event-script":
+        from .event_script import event_script_prompt, validate_event_research, validate_event_script
+        from .script import run_codex
+        research = json.loads(args.research.read_text(encoding="utf-8"))
+        errors = validate_event_research(research)
+        if errors:
+            raise ValueError("Research gate: " + "; ".join(errors))
+        raw = run_codex(event_script_prompt(research), args.output,
+                        command=settings.codex_command, timeout=settings.codex_timeout_seconds)
+        errors = validate_event_script(raw, research)
+        report = args.output.with_suffix(".validation.json")
+        report.write_text(json.dumps({"passed": not errors, "errors": errors,
+            "note": "Structural checks only; independent factual, editorial and rights review required."}, indent=2), encoding="utf-8")
+        print(f"Script gate: {'BLOCK' if errors else 'PASS'}; report: {report}")
+        if errors:
+            raise SystemExit(1)
     elif args.command in {"enqueue-reviewed-trend", "trend-worker-once"}:
         from sqlalchemy import create_engine
         from .production_queue import ProductionQueue

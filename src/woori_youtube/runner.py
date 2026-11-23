@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from .channels import Channel, load_channels
 from .config import settings
 from .ingest import validate_research
-from .media import create_thumbnail, render_video, synthesize_scenes, validate_video
+from .media import create_thumbnail, render_video, synthesize_scenes, validate_video, validate_video_content
 from .models import JobStatus
 from .pipeline import PipelineBlocked, run_research
 from .script import run_codex, script_prompt, validate_script
@@ -71,6 +71,8 @@ def run_daily(channel_id: str = "us-economy", run_date: date | None = None) -> s
                                   width=settings.video_width, height=settings.video_height)
         media_errors = validate_video(video_path, ffmpeg=settings.ffmpeg_bin,
                                       minimum_seconds=480, maximum_seconds=1080)
+        if not media_errors:
+            media_errors.extend(validate_video_content(video_path, ffmpeg=settings.ffmpeg_bin))
         if media_errors:
             raise PipelineBlocked("Video quality gate blocked the run: " + "; ".join(media_errors))
         thumbnail = create_thumbnail(raw["title"], artifact_dir / "thumbnail.jpg")

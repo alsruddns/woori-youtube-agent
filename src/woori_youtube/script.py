@@ -90,7 +90,8 @@ def run_codex(prompt: str, output_path: Path, *, command: str = "codex", timeout
     output_path.parent.mkdir(parents=True, exist_ok=True)
     result = subprocess.run([command, "exec", "--sandbox", "read-only",
                              "--output-last-message", str(output_path), "-"],
-                            input=prompt, capture_output=True, text=True, timeout=timeout, check=False)
+                            input=prompt, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                            timeout=timeout, check=False)
     if result.returncode != 0:
         raise RuntimeError(f"Codex CLI failed ({result.returncode}): {result.stderr[-2000:]}")
     try:

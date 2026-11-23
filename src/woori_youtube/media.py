@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import shutil
 import subprocess
 import wave
 from pathlib import Path
+from fractions import Fraction
 from typing import Any
 
 
@@ -22,13 +24,22 @@ def synthesize_scenes(scenes: list[dict[str, Any]], output_dir: Path, *, voice: 
     pipeline = KPipeline(lang_code=language_code)
     files = []
     for index, scene in enumerate(scenes, start=1):
-        chunks = [audio for _, _, audio in pipeline(scene["narration"], voice=voice)]
+        segments = [(text, audio) for text, _, audio in pipeline(
+            scene["narration"], voice=voice, split_pattern=r"(?<=[.!?])\s+")]
+        chunks = [audio for _, audio in segments]
         if not chunks:
             raise RuntimeError(f"Kokoro returned no audio for scene {index}.")
         import numpy as np
         audio = np.concatenate(chunks)
         path = output_dir / f"scene-{index:03d}.wav"
         sf.write(path, audio, 24000)
+        offset = 0
+        timings = []
+        for text, chunk in segments:
+            end = offset + len(chunk)
+            timings.append({"start": offset / 24000, "end": end / 24000, "text": text})
+            offset = end
+        path.with_suffix(".timings.json").write_text(json.dumps(timings, ensure_ascii=False), encoding="utf-8")
         files.append(path)
     return files
 
@@ -68,8 +79,19 @@ def render_video(script: dict[str, Any], audio_files: list[Path], output: Path, 
     elapsed = 0.0
     for index, (scene, audio) in enumerate(zip(scenes, audio_files), start=1):
         # Text cards avoid unlicensed news footage; later scene assets can replace these.
-        from PIL import Image, ImageDraw, ImageFont
-        image = Image.new("RGB", (width, height), "#101827")
+        from PIL import Image, ImageDraw, ImageFont, ImageOps
+        asset = scene.get("asset")
+        if asset:
+            from .assets import validate_scene_assets
+            asset_errors = validate_scene_assets([scene])
+            if asset_errors:
+                raise ValueError("Asset gate: " + "; ".join(asset_errors))
+            with Image.open(asset["path"]) as source:
+                image = ImageOps.fit(source.convert("RGB"), (width, height))
+            overlay = Image.new("RGBA", (width, height), (0, 0, 0, 105))
+            image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+        else:
+            image = Image.new("RGB", (width, height), "#101827")
         draw = ImageDraw.Draw(image)
         text = str(scene.get("visual", ""))[:200]
         draw.text((90, 100), script.get("title", "Daily Briefing"), fill="white")
@@ -81,26 +103,63 @@ def render_video(script: dict[str, Any], audio_files: list[Path], output: Path, 
             duration = wav.getnframes() / wav.getframerate()
         if not math.isfinite(duration) or duration <= 0:
             raise ValueError(f"Scene {index} has empty narration audio.")
-        words = str(scene.get("narration", "")).split()
-        group_size = 9
-        groups = [words[offset:offset + group_size] for offset in range(0, len(words), group_size)] or [[]]
-        slot = duration / len(groups)
-        for cue_index, group in enumerate(groups):
-            subtitle_cues.append((elapsed + cue_index * slot, elapsed + (cue_index + 1) * slot, " ".join(group)))
+        scene_cues = _scene_cues(audio, str(scene.get("narration", "")), duration)
+        subtitle_cues.extend((elapsed + start, elapsed + end, text) for start, end, text in scene_cues)
         srt_path = temp / f"{index:03d}.srt"
-        srt_path.write_text(_srt([(i * slot, (i + 1) * slot, " ".join(group)) for i, group in enumerate(groups)]), encoding="utf-8")
+        srt_path.write_text(_srt(scene_cues), encoding="utf-8")
         subtitle_filter_path = str(srt_path.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
         subprocess.run([ffmpeg, "-y", "-loop", "1", "-i", str(still_tmp), "-i", str(audio), "-c:v", "libx264",
                         "-tune", "stillimage", "-vf", f"subtitles='{subtitle_filter_path}':force_style='Fontsize=22,Outline=2,MarginV=45'",
                         "-r", "30", "-c:a", "aac", "-b:a", "192k", "-pix_fmt", "yuv420p", "-shortest", str(clip)],
                        check=True, capture_output=True)
         rendered.append(clip)
-        elapsed += duration
+        elapsed += _probe_duration(clip, ffmpeg)
     manifest = temp / "concat.txt"
     manifest.write_text("\n".join(f"file '{p.name}'" for p in rendered), encoding="utf-8")
-    subprocess.run([ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(manifest), "-c", "copy", str(output)], check=True, capture_output=True)
+    subprocess.run([ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(manifest),
+                    "-c:v", "libx264", "-r", "30", "-fps_mode", "cfr", "-pix_fmt", "yuv420p",
+                    "-c:a", "copy", str(output)], check=True, capture_output=True)
     output.with_suffix(".srt").write_text(_srt(subtitle_cues), encoding="utf-8")
     return output
+
+
+def _probe_duration(path: Path, ffmpeg: str) -> float:
+    binary = Path(ffmpeg)
+    sibling = binary.with_name("ffprobe.exe" if binary.suffix.lower() == ".exe" else "ffprobe")
+    probe = str(sibling) if sibling.is_file() else shutil.which("ffprobe")
+    if not probe:
+        raise RuntimeError("ffprobe is required to align concatenated subtitles.")
+    result = subprocess.run([probe, "-v", "error", "-show_entries", "format=duration", "-of",
+                             "default=noprint_wrappers=1:nokey=1", str(path)],
+                            capture_output=True, text=True, check=True)
+    duration = float(result.stdout.strip())
+    if not math.isfinite(duration) or duration <= 0:
+        raise ValueError("Rendered scene has invalid duration.")
+    return duration
+
+
+def _scene_cues(audio: Path, narration: str, duration: float) -> list[tuple[float, float, str]]:
+    """Use actual TTS chunk boundaries; fallback timings remain approximate."""
+    timing_path = audio.with_suffix(".timings.json")
+    if timing_path.exists():
+        try:
+            timings = json.loads(timing_path.read_text(encoding="utf-8"))
+            cues = [(float(item["start"]), float(item["end"]), str(item["text"]).strip()) for item in timings]
+            if (not cues or abs(cues[0][0]) > 0.01 or abs(cues[-1][1] - duration) > 0.05
+                    or any(not text or not math.isfinite(start) or not math.isfinite(end)
+                           or start < 0 or end <= start or end > duration + 0.05
+                           for start, end, text in cues)
+                    or any(abs(a[1] - b[0]) > 0.01 for a, b in zip(cues, cues[1:]))):
+                raise ValueError("Invalid timing boundaries")
+            return cues
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Invalid narration timing file: {timing_path}") from exc
+    words = narration.split()
+    groups = [words[offset:offset + 9] for offset in range(0, len(words), 9)]
+    if not groups:
+        raise ValueError("Narration text is empty")
+    slot = duration / len(groups)
+    return [(i * slot, (i + 1) * slot, " ".join(group)) for i, group in enumerate(groups)]
 
 
 def _srt_time(seconds: float) -> str:
@@ -124,8 +183,35 @@ def create_thumbnail(title: str, output: Path, *, subtitle: str = "DAILY MARKET 
     image = Image.new("RGB", (1280, 720), "#101827")
     draw = ImageDraw.Draw(image)
     draw.rectangle((0, 0, 1280, 16), fill="#38bdf8")
-    draw.text((72, 110), subtitle, fill="#7dd3fc")
-    draw.multiline_text((72, 210), title[:110], fill="white", spacing=14, font_size=64, stroke_width=1)
+    try:
+        label_font = ImageFont.truetype("arialbd.ttf", 30)
+    except OSError:
+        label_font = ImageFont.load_default(size=30)
+    draw.text((72, 90), subtitle, fill="#7dd3fc", font=label_font)
+    words = title.split()
+    if not words:
+        raise ValueError("Thumbnail title is empty.")
+    for size in range(76, 27, -4):
+        try:
+            font = ImageFont.truetype("arialbd.ttf", size)
+        except OSError:
+            font = ImageFont.load_default(size=size)
+        lines = []
+        for word in words:
+            line = (lines[-1] + " " + word) if lines else word
+            if lines and draw.textlength(line, font=font) > 1136:
+                lines.append(word)
+            elif lines:
+                lines[-1] = line
+            else:
+                lines.append(word)
+        text = "\n".join(lines)
+        bounds = draw.multiline_textbbox((72, 180), text, font=font, spacing=14, stroke_width=1)
+        if bounds[2] <= 1208 and bounds[3] <= 650:
+            break
+    else:
+        raise ValueError("Thumbnail title is too long to fit legibly.")
+    draw.multiline_text((72, 180), text, fill="white", font=font, spacing=14, stroke_width=1)
     output.parent.mkdir(parents=True, exist_ok=True)
     image.save(output, "JPEG", quality=90, optimize=True)
     return output
@@ -141,7 +227,7 @@ def validate_video(path: Path, *, ffmpeg: str = "ffmpeg", minimum_seconds: int =
     if not probe:
         return ["ffprobe is not installed; media validation cannot pass."]
     result = subprocess.run([probe, "-v", "error", "-show_entries",
-                             "format=duration:stream=codec_type,width,height", "-of", "json", str(path)],
+                             "format=duration:stream=codec_type,width,height,avg_frame_rate", "-of", "json", str(path)],
                             capture_output=True, text=True)
     if result.returncode:
         return ["ffprobe could not read the video."]
@@ -159,6 +245,31 @@ def validate_video(path: Path, *, ffmpeg: str = "ffmpeg", minimum_seconds: int =
     videos = [s for s in streams if s.get("codec_type") == "video"]
     if not videos or videos[0].get("width") != width or videos[0].get("height") != height:
         errors.append(f"Video resolution must be {width}x{height}.")
+    if videos:
+        try:
+            fps = Fraction(videos[0].get("avg_frame_rate", "0/1"))
+            if fps != 30:
+                raise ValueError
+        except (ValueError, ZeroDivisionError, TypeError):
+            errors.append("Video frame rate must be 30 fps.")
     if not any(s.get("codec_type") == "audio" for s in streams):
         errors.append("Video has no audio stream.")
     return errors
+
+
+def validate_video_content(path: Path, *, ffmpeg: str = "ffmpeg") -> list[str]:
+    """Fully decode both streams and detect inaudible mean audio level.
+
+    This cannot establish factual accuracy, subtitle accuracy, or visual quality.
+    """
+    result = subprocess.run([ffmpeg, "-hide_banner", "-v", "info", "-xerror", "-i", str(path),
+                             "-map", "0:v:0", "-map", "0:a:0", "-af", "volumedetect",
+                             "-f", "null", "-"], capture_output=True, text=True)
+    if result.returncode:
+        return ["Full audio/video decode failed."]
+    match = re.search(r"mean_volume:\s*(-?\d+(?:\.\d+)?|-inf)\s*dB", result.stderr)
+    if not match:
+        return ["Could not measure audio level."]
+    if match.group(1) == "-inf" or float(match.group(1)) < -55:
+        return ["Audio is silent or too quiet to verify."]
+    return []
