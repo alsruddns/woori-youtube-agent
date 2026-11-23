@@ -21,6 +21,14 @@ def main() -> None:
     trends.add_argument("--channel", default="us-economy")
     trends.add_argument("--region", default="US")
     sub.add_parser("youtube-auth")
+    admission = sub.add_parser("enqueue-reviewed-trend")
+    admission.add_argument("--channel", default="us-economy")
+    admission.add_argument("--keyword", required=True)
+    admission.add_argument("--event-key", required=True)
+    admission.add_argument("--reason", required=True)
+    worker = sub.add_parser("trend-worker-once")
+    worker.add_argument("--channel", default="us-economy")
+    worker.add_argument("--worker", required=True)
     sub.add_parser("status")
     args = parser.parse_args()
     if args.command == "research":
@@ -35,6 +43,26 @@ def main() -> None:
         credentials = authorize(settings.youtube_client_secrets_file, settings.youtube_token_file)
         verify_channel(credentials, settings.youtube_channel_id)
         print("Authenticated YouTube channel matches configured ID.")
+    elif args.command in {"enqueue-reviewed-trend", "trend-worker-once"}:
+        from sqlalchemy import create_engine
+        from .production_queue import ProductionQueue
+        channel = load_channels(settings.channels_file).get(args.channel)
+        if channel is None or not channel.enabled:
+            raise ValueError("Channel must exist and be enabled")
+        if not settings.database_url.startswith("postgresql"):
+            raise RuntimeError("Production queue requires PostgreSQL")
+        engine = create_engine(settings.database_url, pool_pre_ping=True)
+        try:
+            if args.command == "enqueue-reviewed-trend":
+                job_id = ProductionQueue(engine).enqueue_reviewed_trend(
+                    args.channel, args.keyword, args.event_key, args.reason)
+                print(f"Queued reviewed event: {job_id}")
+            else:
+                from .trend_worker import run_once
+                job_id = run_once(engine, args.channel, channel.country, args.worker, settings.artifacts_dir)
+                print(f"Rechecked and blocked for research: {job_id}" if job_id else "No pending job")
+        finally:
+            engine.dispose()
     elif args.command == "trends":
         from sqlalchemy import create_engine
         from .trends import collect

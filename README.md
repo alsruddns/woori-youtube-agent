@@ -56,6 +56,8 @@ Uploads additionally require `US_YOUTUBE_CHANNEL_ID` to match the authenticated 
 
 Migration `0003_production_queue` adds an event-keyed queue with transactional claiming and leases. Event keys must be assigned through verified editorial review; the current collector does not identify events and the queue is not connected to the legacy runner. Expired claims are blocked for review rather than retried automatically. There is no automatic daily target, verified topic selection, or publisher integration yet.
 
+For development, `enqueue-reviewed-trend --keyword ... --event-key ... --reason ...` admits an independently reviewed event only if its keyword is in the latest successful RSS snapshot, no older than 30 minutes. It records the selection and rejects an existing event key atomically. `trend-worker-once --worker ...` claims a job, collects a fresh RSS snapshot, saves its unverified news leads under the job's artifact directory and blocks for independent research. These commands do not establish the requested 4-hour/24-hour or active filters, automate editorial review, render a video, or upload. They are not unattended production.
+
 FFmpeg validation checks duration, video resolution, and presence of an audio stream; these checks do not establish audible narration, synchronized subtitles, media rights, factual accuracy, or video integrity. Human and additional automated checks remain necessary.
 
 The renderer bases approximate subtitle cue timing on the actual WAV duration and writes a sidecar SRT. It distributes words evenly within each scene; this is not word-level alignment and needs review. The existing text-card renderer is a technical prototype, not a completed visual production or quality gate.
