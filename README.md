@@ -49,3 +49,13 @@ $env:PYTHONPATH = "src"
 Each successful collection stores a snapshot and each fetch failure stores an error. The public RSS endpoint does not establish a 4-hour or 24-hour window or active status; these fields are not inferred. The volume value is the lower bound of a displayed bucket, not an exact count. The collector is not yet connected to topic selection or scheduling. Existing per-day job and upload constraints remain in place.
 
 Uploads additionally require `US_YOUTUBE_CHANNEL_ID` to match the authenticated channel. Changing OAuth scopes may require a new interactive authorization; do not delete an existing token without reviewing it first. Public publishing remains opt-in.
+
+## Authentication and queue development status
+
+`python -m woori_youtube.cli youtube-auth` starts the Google Desktop OAuth flow and then verifies the configured channel ID. This does not upload a video. The authentication token is stored in the ignored path configured by `YOUTUBE_TOKEN_FILE`.
+
+Migration `0003_production_queue` adds an event-keyed queue with transactional claiming and leases. Event keys must be assigned through verified editorial review; the current collector does not identify events and the queue is not connected to the legacy runner. Expired claims are blocked for review rather than retried automatically. There is no automatic daily target, verified topic selection, or publisher integration yet.
+
+FFmpeg validation checks duration, video resolution, and presence of an audio stream; these checks do not establish audible narration, synchronized subtitles, media rights, factual accuracy, or video integrity. Human and additional automated checks remain necessary.
+
+Install the collection-only scheduled task with `scripts/install-trends-scheduler.ps1` after the database and migrations are ready. It runs every 30 minutes, prevents overlapping instances, and logs under the ignored `data/` directory. It does not create or publish videos. Run `Unregister-ScheduledTask -TaskName WooriYouTubeAgent-Trends` to remove it. Python 3.12 is required for the current Kokoro dependency.

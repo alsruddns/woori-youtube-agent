@@ -125,14 +125,34 @@ def create_thumbnail(title: str, output: Path, *, subtitle: str = "DAILY MARKET 
     return output
 
 
-def validate_video(path: Path, *, ffmpeg: str = "ffmpeg", minimum_seconds: int = 60) -> list[str]:
+def validate_video(path: Path, *, ffmpeg: str = "ffmpeg", minimum_seconds: int = 480,
+                   maximum_seconds: int = 1080, width: int = 1920, height: int = 1080) -> list[str]:
     if not path.exists() or path.stat().st_size < 100_000:
         return ["Rendered video is missing or too small."]
-    probe = shutil.which("ffprobe")
+    ffmpeg_path = Path(ffmpeg)
+    sibling = ffmpeg_path.with_name("ffprobe.exe" if ffmpeg_path.suffix.lower() == ".exe" else "ffprobe")
+    probe = str(sibling) if sibling.is_file() else shutil.which("ffprobe")
     if not probe:
         return ["ffprobe is not installed; media validation cannot pass."]
-    result = subprocess.run([probe, "-v", "error", "-show_entries", "format=duration", "-of", "json", str(path)], capture_output=True, text=True)
+    result = subprocess.run([probe, "-v", "error", "-show_entries",
+                             "format=duration:stream=codec_type,width,height", "-of", "json", str(path)],
+                            capture_output=True, text=True)
     if result.returncode:
         return ["ffprobe could not read the video."]
-    duration = float(json.loads(result.stdout)["format"]["duration"])
-    return [] if duration >= minimum_seconds else [f"Video duration {duration:.1f}s is below {minimum_seconds}s."]
+    try:
+        data = json.loads(result.stdout)
+        duration = float(data["format"]["duration"])
+        streams = data.get("streams", [])
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return ["ffprobe did not provide valid media metadata."]
+    errors = []
+    if not math.isfinite(duration) or duration < minimum_seconds:
+        errors.append(f"Video duration {duration:.1f}s is below {minimum_seconds}s.")
+    elif duration > maximum_seconds:
+        errors.append(f"Video duration {duration:.1f}s exceeds {maximum_seconds}s.")
+    videos = [s for s in streams if s.get("codec_type") == "video"]
+    if not videos or videos[0].get("width") != width or videos[0].get("height") != height:
+        errors.append(f"Video resolution must be {width}x{height}.")
+    if not any(s.get("codec_type") == "audio" for s in streams):
+        errors.append("Video has no audio stream.")
+    return errors

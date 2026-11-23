@@ -20,6 +20,7 @@ def main() -> None:
     trends = sub.add_parser("trends")
     trends.add_argument("--channel", default="us-economy")
     trends.add_argument("--region", default="US")
+    sub.add_parser("youtube-auth")
     sub.add_parser("status")
     args = parser.parse_args()
     if args.command == "research":
@@ -29,6 +30,11 @@ def main() -> None:
         print(f"Collected {len(package.items)} items; gate={'PASS' if not errors else 'BLOCK'}")
         for error in errors:
             print(f"- {error}")
+    elif args.command == "youtube-auth":
+        from .youtube import authorize, verify_channel
+        credentials = authorize(settings.youtube_client_secrets_file, settings.youtube_token_file)
+        verify_channel(credentials, settings.youtube_channel_id)
+        print("Authenticated YouTube channel matches configured ID.")
     elif args.command == "trends":
         from sqlalchemy import create_engine
         from .trends import collect

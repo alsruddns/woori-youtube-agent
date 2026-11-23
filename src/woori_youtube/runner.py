@@ -70,7 +70,7 @@ def run_daily(channel_id: str = "us-economy", run_date: date | None = None) -> s
         video_path = render_video(raw, audio_files, artifact_dir / "final.mp4", ffmpeg=settings.ffmpeg_bin,
                                   width=settings.video_width, height=settings.video_height)
         media_errors = validate_video(video_path, ffmpeg=settings.ffmpeg_bin,
-                                      minimum_seconds=channel.target_minutes * 60 * 0.9)
+                                      minimum_seconds=480, maximum_seconds=1080)
         if media_errors:
             raise PipelineBlocked("Video quality gate blocked the run: " + "; ".join(media_errors))
         thumbnail = create_thumbnail(raw["title"], artifact_dir / "thumbnail.jpg")
