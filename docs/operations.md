@@ -23,6 +23,8 @@ Add official Korean government/statistical agency/central bank feeds and reviewe
 
 ## Recovery and observation
 
+- The uploader keeps its ignored `*.upload-session.json` record after completion, including the video ID and a fingerprint of the video and metadata. Keep this record with the artifact: it prevents an ordinary restart from creating a second upload. A mismatched, unreadable, legacy, or expired record requires inspecting YouTube Studio before any deliberate retry. A crash before the initial resumable-session URL is saved can still leave an uncertain upload, so never blindly recreate a missing record after an interrupted upload.
+
 - Dashboard: `http://127.0.0.1:8000/`; JSON status: `/api/jobs` and `/api/jobs/{job_id}`.
 - Job records preserve state, timestamps, attempt count, and error. The next process start converts orphaned `running` jobs to `retry` for operator visibility.
 - Scheduler config retries a failed process three times at ten-minute intervals. Duplicate upload ledger blocks a second upload for the same channel/date.

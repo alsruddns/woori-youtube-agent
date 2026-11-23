@@ -13,5 +13,6 @@ token*.json
 client_secret*.json
 client_secrets*.json
 *.upload-session.json
+*.upload-session.json.tmp
 
 .venv312/

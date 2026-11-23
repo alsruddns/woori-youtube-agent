@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +12,30 @@ from typing import Any
 
 class PublishBlocked(RuntimeError):
     pass
+
+
+def _write_upload_state(path: Path, state: dict[str, Any]) -> None:
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(state), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _upload_fingerprint(path: Path, body: dict[str, Any]) -> str:
+    digest = hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False).encode("utf-8"))
+    with path.open("rb") as video:
+        for chunk in iter(lambda: video.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _acknowledged_offset(response: Any, total: int) -> int:
+    value = response.headers.get("Range", "")
+    if not value:
+        return 0
+    match = re.fullmatch(r"bytes=0-(\d+)", value)
+    if not match or int(match.group(1)) >= total:
+        raise PublishBlocked("Invalid upload acknowledgement; inspect YouTube Studio before retrying.")
+    return int(match.group(1)) + 1
 
 
 def authorize(client_secrets: Path, token_file: Path, *, port: int = 0) -> Any:
@@ -68,13 +95,21 @@ def upload_video(path: Path, metadata: dict[str, Any], credentials: Any, *, priv
     mime_type = "video/mp4"
     session_file = session_file or path.with_suffix(".upload-session.json")
     session_file.parent.mkdir(parents=True, exist_ok=True)
+    fingerprint = _upload_fingerprint(path, body)
     upload_url: str | None = None
     offset = 0
     if session_file.exists():
         try:
-            upload_url = json.loads(session_file.read_text(encoding="utf-8")).get("upload_url")
+            state = json.loads(session_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            upload_url = None
+            raise PublishBlocked("Upload record is unreadable; inspect YouTube Studio before retrying.")
+        if not isinstance(state, dict) or state.get("fingerprint") != fingerprint or state.get("size") != total:
+            raise PublishBlocked("Upload record does not match this video and metadata; inspect YouTube Studio before retrying.")
+        if state.get("video_id"):
+            return state["video_id"]
+        upload_url = state.get("upload_url")
+        if not upload_url:
+            raise PublishBlocked("Upload record has no session URL; inspect YouTube Studio before retrying.")
     if not upload_url:
         response = session.post(
             "https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
@@ -85,18 +120,16 @@ def upload_video(path: Path, metadata: dict[str, Any], credentials: Any, *, priv
         upload_url = response.headers.get("Location")
         if not upload_url:
             raise RuntimeError("YouTube did not return a resumable upload session URL.")
-        session_file.write_text(json.dumps({"upload_url": upload_url, "size": total}), encoding="utf-8")
+        _write_upload_state(session_file, {"upload_url": upload_url, "size": total, "fingerprint": fingerprint})
     # Ask YouTube for the acknowledged offset so a restarted process continues from its cursor.
     cursor = session.put(upload_url, headers={"Content-Length": "0", "Content-Range": f"bytes */{total}"}, timeout=60)
     if cursor.status_code in (200, 201):
-        session_file.unlink(missing_ok=True)
-        return cursor.json()["id"]
+        video_id = cursor.json()["id"]
+        _write_upload_state(session_file, {"size": total, "fingerprint": fingerprint, "video_id": video_id})
+        return video_id
     if cursor.status_code == 308:
-        acknowledged = cursor.headers.get("Range", "")
-        if acknowledged.startswith("bytes=0-"):
-            offset = int(acknowledged.partition("-")[2]) + 1
+        offset = _acknowledged_offset(cursor, total)
     elif cursor.status_code in (404, 410):
-        session_file.unlink(missing_ok=True)
         raise PublishBlocked("YouTube upload session expired; verify YouTube Studio before manually retrying to avoid a duplicate upload.")
     else:
         cursor.raise_for_status()
@@ -111,11 +144,13 @@ def upload_video(path: Path, metadata: dict[str, Any], credentials: Any, *, priv
                 headers={"Content-Length": str(len(chunk)), "Content-Type": mime_type,
                          "Content-Range": f"bytes {offset}-{end}/{total}"}, timeout=180)
             if response.status_code in (200, 201):
-                session_file.unlink(missing_ok=True)
-                return response.json()["id"]
+                video_id = response.json()["id"]
+                _write_upload_state(session_file, {"size": total, "fingerprint": fingerprint, "video_id": video_id})
+                return video_id
             if response.status_code == 308:
-                acknowledged = response.headers.get("Range", "")
-                next_offset = int(acknowledged.partition("-")[2]) + 1 if acknowledged.startswith("bytes=0-") else end + 1
+                next_offset = _acknowledged_offset(response, total)
+                if next_offset <= offset or next_offset > end + 1:
+                    raise PublishBlocked("Upload acknowledgement did not advance as expected; inspect before retrying.")
                 if next_offset > offset:
                     consecutive_failures = 0
                 offset = next_offset
@@ -125,6 +160,14 @@ def upload_video(path: Path, metadata: dict[str, Any], credentials: Any, *, priv
                 if consecutive_failures > 5:
                     raise RuntimeError(f"YouTube upload failed repeatedly with HTTP {response.status_code}.")
                 time.sleep(min(2 ** consecutive_failures, 30))
+                status = session.put(upload_url, headers={"Content-Length": "0", "Content-Range": f"bytes */{total}"}, timeout=60)
+                if status.status_code in (200, 201):
+                    video_id = status.json()["id"]
+                    _write_upload_state(session_file, {"size": total, "fingerprint": fingerprint, "video_id": video_id})
+                    return video_id
+                if status.status_code != 308:
+                    raise PublishBlocked("Unable to determine upload status after a server error; inspect before retrying.")
+                offset = _acknowledged_offset(status, total)
                 continue
             response.raise_for_status()
     raise RuntimeError("YouTube upload ended without a completed video response.")
