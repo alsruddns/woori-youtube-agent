@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from woori_youtube.youtube import PublishBlocked, upload_video, upload_caption_track
+from woori_youtube.youtube import PublishBlocked, upload_video, upload_caption_track, authorize_captions
 
 
 def test_public_upload_is_blocked_until_preflight_flag(tmp_path):
@@ -81,6 +81,14 @@ def test_caption_upload_requires_review_and_additional_scope(tmp_path):
         def has_scopes(self, scopes): return False
     with pytest.raises(PublishBlocked, match="force-ssl"):
         upload_caption_track("video", srt, Credentials(), "channel", timing_reviewed=True)
+
+
+def test_caption_auth_never_overwrites_upload_token(tmp_path):
+    token = tmp_path / "upload.json"
+    token.write_text("keep", encoding="utf-8")
+    with pytest.raises(ValueError, match="separate"):
+        authorize_captions(tmp_path / "client.json", token, "channel", existing_upload_token=token)
+    assert token.read_text(encoding="utf-8") == "keep"
 
 
 def test_caption_upload_checks_channel_and_existing_tracks(tmp_path, monkeypatch):

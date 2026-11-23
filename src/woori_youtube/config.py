@@ -34,6 +34,7 @@ class Settings:
     youtube_privacy_status: str = os.getenv("YOUTUBE_PRIVACY_STATUS", "private")
     youtube_client_secrets_file: Path = Path(os.getenv("YOUTUBE_CLIENT_SECRETS_FILE", "secrets/youtube-client-secret.json"))
     youtube_token_file: Path = Path(os.getenv("YOUTUBE_TOKEN_FILE", "secrets/youtube-token.json"))
+    youtube_caption_token_file: Path = Path(os.getenv("YOUTUBE_CAPTION_TOKEN_FILE", "secrets/youtube-caption-token.json"))
     youtube_privacy_status: str = os.getenv("YOUTUBE_PRIVACY_STATUS", "private")
     ffmpeg_bin: str = os.getenv("FFMPEG_BIN", "ffmpeg")
     video_width: int = int(os.getenv("VIDEO_WIDTH", "1920"))

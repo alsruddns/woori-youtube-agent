@@ -69,6 +69,30 @@ def verify_channel(credentials: Any, expected_channel_id: str) -> None:
         raise PublishBlocked("Authenticated YouTube channel does not match the configured channel ID.")
 
 
+def authorize_captions(client_secrets: Path, token_file: Path, expected_channel_id: str, *,
+                       existing_upload_token: Path, port: int = 0) -> Any:
+    """Authorize caption access separately, without replacing the upload token."""
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    if token_file.resolve() == existing_upload_token.resolve():
+        raise ValueError("Caption token must be separate from the existing upload token.")
+    scopes = ["https://www.googleapis.com/auth/youtube.force-ssl"]
+    credentials = Credentials.from_authorized_user_file(str(token_file), scopes) if token_file.exists() else None
+    if credentials and credentials.expired and credentials.refresh_token:
+        credentials.refresh(Request())
+    if not credentials or not credentials.valid or not credentials.has_scopes(scopes):
+        credentials = InstalledAppFlow.from_client_secrets_file(str(client_secrets), scopes).run_local_server(
+            port=port, access_type="offline", prompt="consent")
+    granted = getattr(credentials, "granted_scopes", None)
+    if not credentials.valid or not credentials.has_scopes(scopes) or (granted is not None and not set(scopes).issubset(granted)):
+        raise PublishBlocked("Caption authorization was not granted.")
+    verify_channel(credentials, expected_channel_id)
+    token_file.parent.mkdir(parents=True, exist_ok=True)
+    token_file.write_text(credentials.to_json(), encoding="utf-8")
+    return credentials
+
+
 def upload_video(path: Path, metadata: dict[str, Any], credentials: Any, *, privacy_status: str = "private", publish_at: datetime | None = None, public_preflight_passed: bool = False, session_file: Path | None = None) -> str:
     if privacy_status == "public" and not public_preflight_passed:
         raise PublishBlocked("Public upload is disabled until a controlled public-upload preflight has been recorded.")

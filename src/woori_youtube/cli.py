@@ -25,6 +25,7 @@ def main() -> None:
     trends.add_argument("--channel", default="us-economy")
     trends.add_argument("--region", default="US")
     sub.add_parser("youtube-auth")
+    sub.add_parser("youtube-caption-auth")
     admission = sub.add_parser("enqueue-reviewed-trend")
     admission.add_argument("--channel", default="us-economy")
     admission.add_argument("--keyword", required=True)
@@ -69,6 +70,11 @@ def main() -> None:
         print(f"Collected {len(package.items)} items; gate={'PASS' if not errors else 'BLOCK'}")
         for error in errors:
             print(f"- {error}")
+    elif args.command == "youtube-caption-auth":
+        from .youtube import authorize_captions
+        authorize_captions(settings.youtube_client_secrets_file, settings.youtube_caption_token_file,
+                           settings.youtube_channel_id, existing_upload_token=settings.youtube_token_file)
+        print("Caption OAuth consent granted and configured channel verified.")
     elif args.command == "youtube-auth":
         from .youtube import authorize, verify_channel
         credentials = authorize(settings.youtube_client_secrets_file, settings.youtube_token_file)
