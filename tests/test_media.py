@@ -28,6 +28,14 @@ def test_tts_chunk_cues_follow_measured_boundaries(tmp_path):
         (0.0, 0.75, "First sentence."), (0.75, 2.0, "Second sentence.")]
 
 
+def test_long_cue_is_split_within_original_audio_bounds():
+    cues = media._split_long_cues([(1.0, 5.0, "one two three four five six seven eight nine ten")])
+    assert len(cues) == 2
+    assert cues[0][0] == 1.0 and cues[-1][1] == 5.0
+    assert cues[0][1] == cues[1][0]
+    assert " ".join(cue[2] for cue in cues) == "one two three four five six seven eight nine ten"
+
+
 def test_video_quality_checks_duration_resolution_and_audio(tmp_path, monkeypatch):
     video = tmp_path / "video.mp4"
     video.write_bytes(b"x" * 100000)

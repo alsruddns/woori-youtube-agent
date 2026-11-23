@@ -38,6 +38,14 @@ def main() -> None:
     event_render.add_argument("--script", required=True, type=Path)
     event_render.add_argument("--assets", required=True, type=Path)
     event_render.add_argument("--output-dir", required=True, type=Path)
+    content_script = sub.add_parser("content-script")
+    content_script.add_argument("--input", required=True, type=Path)
+    content_script.add_argument("--output", required=True, type=Path)
+    content_render = sub.add_parser("content-render")
+    content_render.add_argument("--input", required=True, type=Path)
+    content_render.add_argument("--script", required=True, type=Path)
+    content_render.add_argument("--assets", required=True, type=Path)
+    content_render.add_argument("--output-dir", required=True, type=Path)
     sub.add_parser("status")
     args = parser.parse_args()
     if args.command == "research":
@@ -52,6 +60,32 @@ def main() -> None:
         credentials = authorize(settings.youtube_client_secrets_file, settings.youtube_token_file)
         verify_channel(credentials, settings.youtube_channel_id)
         print("Authenticated YouTube channel matches configured ID.")
+    elif args.command == "content-script":
+        from .content_script import content_script_prompt, validate_content_inputs, validate_content_script
+        from .script import run_codex
+        payload = json.loads(args.input.read_text(encoding="utf-8"))
+        errors = validate_content_inputs(payload["content_type"], payload["topics"], payload["research"],
+                                         period=payload.get("period"), ranking_basis=payload.get("ranking_basis"))
+        if errors:
+            raise ValueError("Input gate: " + "; ".join(errors))
+        raw = run_codex(content_script_prompt(payload["content_type"], payload["topics"], payload["research"]),
+                        args.output, command=settings.codex_command, timeout=settings.codex_timeout_seconds)
+        errors = validate_content_script(payload["content_type"], payload["topics"], payload["research"], raw,
+                                         period=payload.get("period"), ranking_basis=payload.get("ranking_basis"))
+        report = args.output.with_suffix(".validation.json")
+        report.write_text(json.dumps({"passed": not errors, "errors": errors,
+            "note": "Structural checks do not establish truth, rights or rank evidence."}, indent=2), encoding="utf-8")
+        print(f"Script gate: {'BLOCK' if errors else 'PASS'}; report: {report}")
+        if errors:
+            raise SystemExit(1)
+    elif args.command == "content-render":
+        from .content_production import render_content
+        payload = json.loads(args.input.read_text(encoding="utf-8"))
+        result = render_content(payload["content_type"], payload["topics"], payload["research"],
+            json.loads(args.script.read_text(encoding="utf-8")), json.loads(args.assets.read_text(encoding="utf-8")),
+            args.output_dir, ffmpeg=settings.ffmpeg_bin, period=payload.get("period"),
+            ranking_basis=payload.get("ranking_basis"))
+        print(json.dumps(result, indent=2))
     elif args.command == "event-render":
         from .event_production import render_event
         result = render_event(json.loads(args.research.read_text(encoding="utf-8")),

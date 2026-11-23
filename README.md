@@ -1,5 +1,7 @@
 > **Development status:** the legacy daily pipeline is still economy/politics based and enforces one job per day. It does not satisfy the Now Trends production requirements and must not be enabled for unattended production. The Trends collector below is an independent, partial implementation. No video or upload readiness is implied.
 
+Three-format development adds separate MAIN_NEWS, SINGLE_SHORT and TOP5_SHORT specifications and a content-plan migration. The 2/10/2 numbers are goals, not evidence of automatic scheduling or throughput. The new `content-script` and `content-render` commands use a manually prepared JSON bundle of topics and research; they are not connected to the durable queue or uploader. TOP 5 requires manually reviewed evidence of distinct official 24-hour ranks. RSS bucket values alone do not establish those ranks, and the software does not independently verify the supplied evidence URLs. All output remains subject to editorial, rights, caption and visual review.
+
 # Woori YouTube Agent
 
 Local-first automation for daily US economy and politics news videos. Channel settings are locale-based so additional languages and country channels can be enabled without changing the pipeline. The US English channel is enabled; Korean is scaffolded and disabled pending Korean source feeds and editorial settings.

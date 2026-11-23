@@ -93,8 +93,16 @@ def render_video(script: dict[str, Any], audio_files: list[Path], output: Path, 
         else:
             image = Image.new("RGB", (width, height), "#101827")
         draw = ImageDraw.Draw(image)
-        text = str(scene.get("visual", ""))[:200]
+        # Visual direction is for production, not audience-facing caption text.
+        text = str(scene.get("on_screen_text", ""))[:200]
         draw.text((90, 100), script.get("title", "Daily Briefing"), fill="white")
+        if type(scene.get("rank")) is int and 1 <= scene["rank"] <= 5:
+            try:
+                rank_font = ImageFont.truetype("arialbd.ttf", max(36, width // 6))
+            except OSError:
+                rank_font = ImageFont.load_default(size=max(36, width // 6))
+            draw.text((width // 10, height // 5), f"#{scene['rank']}", fill="#7dd3fc", font=rank_font,
+                      stroke_width=2, stroke_fill="#101827")
         draw.multiline_text((90, height // 2), text, fill="#93c5fd", font_size=44, spacing=18)
         still_tmp = temp / f"{index:03d}.png"
         image.save(still_tmp)
@@ -108,8 +116,9 @@ def render_video(script: dict[str, Any], audio_files: list[Path], output: Path, 
         srt_path = temp / f"{index:03d}.srt"
         srt_path.write_text(_srt(scene_cues), encoding="utf-8")
         subtitle_filter_path = str(srt_path.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
+        style = "Fontsize=11,Outline=1,Alignment=2,MarginV=48,MarginL=30,MarginR=30" if height > width else "Fontsize=22,Outline=2,MarginV=45"
         subprocess.run([ffmpeg, "-y", "-loop", "1", "-i", str(still_tmp), "-i", str(audio), "-c:v", "libx264",
-                        "-tune", "stillimage", "-vf", f"subtitles='{subtitle_filter_path}':force_style='Fontsize=22,Outline=2,MarginV=45'",
+                        "-tune", "stillimage", "-vf", f"subtitles='{subtitle_filter_path}':force_style='{style}'",
                         "-r", "30", "-c:a", "aac", "-b:a", "192k", "-pix_fmt", "yuv420p", "-shortest", str(clip)],
                        check=True, capture_output=True)
         rendered.append(clip)
@@ -151,7 +160,7 @@ def _scene_cues(audio: Path, narration: str, duration: float) -> list[tuple[floa
                            for start, end, text in cues)
                     or any(abs(a[1] - b[0]) > 0.01 for a, b in zip(cues, cues[1:]))):
                 raise ValueError("Invalid timing boundaries")
-            return cues
+            return _split_long_cues(cues)
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
             raise ValueError(f"Invalid narration timing file: {timing_path}") from exc
     words = narration.split()
@@ -160,6 +169,22 @@ def _scene_cues(audio: Path, narration: str, duration: float) -> list[tuple[floa
         raise ValueError("Narration text is empty")
     slot = duration / len(groups)
     return [(i * slot, (i + 1) * slot, " ".join(group)) for i, group in enumerate(groups)]
+
+
+def _split_long_cues(cues: list[tuple[float, float, str]]) -> list[tuple[float, float, str]]:
+    """Keep real TTS chunk bounds; sub-cue timing is an approximation, not forced alignment."""
+    result = []
+    for start, end, text in cues:
+        words = text.split()
+        groups = [words[i:i + 6] for i in range(0, len(words), 6)]
+        weights = [sum(len(word) for word in group) for group in groups]
+        total = sum(weights)
+        cursor = start
+        for index, (group, weight) in enumerate(zip(groups, weights)):
+            next_time = end if index == len(groups) - 1 else cursor + (end - start) * weight / total
+            result.append((cursor, next_time, " ".join(group)))
+            cursor = next_time
+    return result
 
 
 def _srt_time(seconds: float) -> str:
