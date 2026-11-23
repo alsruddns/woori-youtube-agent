@@ -29,3 +29,9 @@ def test_stock_video_requires_rights_and_illustrative_label(tmp_path):
     assert any("illustrative" in error for error in validate_scene_assets([{"asset": asset}]))
     asset["broll"]["depiction"] = "illustrative"
     assert validate_scene_assets([{"asset": asset}]) == []
+    asset["broll"] = [asset["broll"], dict(asset["broll"], start_seconds=4)]
+    assert validate_scene_assets([{"asset": asset}]) == []
+    asset["broll"][1]["depiction"] = "archive"
+    assert any("archive" in error for error in validate_scene_assets([{"asset": asset}]))
+    asset["broll"][1]["archive_context"] = "CREW-13 OCT 2026"
+    assert validate_scene_assets([{"asset": asset}]) == []

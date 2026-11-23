@@ -28,15 +28,23 @@ def validate_scene_assets(scenes: list[dict], *, allow_video: bool = False) -> l
                     errors.append(f"Scene {index} needs a valid {key}.")
         if kind == "licensed" and (not asset.get("license") or not asset.get("attribution")):
             errors.append(f"Scene {index} needs license and attribution details.")
-        if path.suffix.lower() in {".mp4", ".webm", ".mov"} and asset.get("depiction") != "illustrative":
-            errors.append(f"Scene {index} video must be marked as illustrative stock footage.")
+        if path.suffix.lower() in {".mp4", ".webm", ".mov"}:
+            if asset.get("depiction") not in {"illustrative", "archive"}:
+                errors.append(f"Scene {index} video must be marked as illustrative or archive footage.")
+            if asset.get("depiction") == "archive":
+                context = asset.get("archive_context")
+                if not isinstance(context, str) or not context.strip() or len(context) > 45 or not context.isprintable():
+                    errors.append(f"Scene {index} archive footage requires concise identifying context.")
         if asset.get("broll") is not None:
-            broll = asset["broll"]
-            if not isinstance(broll, dict) or broll.get("broll") is not None:
-                errors.append(f"Scene {index} has invalid nested B-roll.")
-            else:
-                errors.extend(f"Scene {index} B-roll: {error}" for error in
-                              validate_scene_assets([{"asset": broll}], allow_video=True))
-                if Path(str(broll.get("path", ""))).suffix.lower() not in {".mp4", ".webm", ".mov"}:
-                    errors.append(f"Scene {index} B-roll must be a video.")
+            clips = asset["broll"] if isinstance(asset["broll"], list) else [asset["broll"]]
+            if not clips or len(clips) > 10:
+                errors.append(f"Scene {index} needs between one and ten B-roll clips.")
+            for broll in clips:
+                if not isinstance(broll, dict) or broll.get("broll") is not None:
+                    errors.append(f"Scene {index} has invalid nested B-roll.")
+                else:
+                    errors.extend(f"Scene {index} B-roll: {error}" for error in
+                                  validate_scene_assets([{"asset": broll}], allow_video=True))
+                    if Path(str(broll.get("path", ""))).suffix.lower() not in {".mp4", ".webm", ".mov"}:
+                        errors.append(f"Scene {index} B-roll must be a video.")
     return errors

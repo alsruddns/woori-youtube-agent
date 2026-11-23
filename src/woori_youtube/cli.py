@@ -24,8 +24,18 @@ def main() -> None:
     trends = sub.add_parser("trends")
     trends.add_argument("--channel", default="us-economy")
     trends.add_argument("--region", default="US")
+    grouping = sub.add_parser("trend-groups")
+    grouping.add_argument("--channel", default="us-economy")
     sub.add_parser("youtube-auth")
     sub.add_parser("youtube-caption-auth")
+    caption_upload = sub.add_parser("youtube-caption-upload")
+    caption_upload.add_argument("--video-id", required=True)
+    caption_upload.add_argument("--srt", required=True, type=Path)
+    caption_upload.add_argument("--timing-reviewed", action="store_true", required=True)
+    caption_upload.add_argument("--name", default="English reviewed")
+    stats = sub.add_parser("youtube-collect-stats")
+    stats.add_argument("--channel", default="us-economy")
+    stats.add_argument("--video-id", required=True)
     admission = sub.add_parser("enqueue-reviewed-trend")
     admission.add_argument("--channel", default="us-economy")
     admission.add_argument("--keyword", required=True)
@@ -61,6 +71,12 @@ def main() -> None:
     content_worker.add_argument("--type", required=True, choices=["MAIN_NEWS", "SINGLE_SHORT", "TOP5_SHORT"])
     content_worker.add_argument("--worker", required=True)
     content_worker.add_argument("--input-root", required=True, type=Path)
+    publication = sub.add_parser("publication-enqueue")
+    publication.add_argument("--plan-id", required=True)
+    publication.add_argument("--review-note", required=True)
+    publication_worker = sub.add_parser("publication-worker-once")
+    publication_worker.add_argument("--channel", default="us-economy")
+    publication_worker.add_argument("--worker", required=True)
     sub.add_parser("status")
     args = parser.parse_args()
     if args.command == "research":
@@ -70,6 +86,45 @@ def main() -> None:
         print(f"Collected {len(package.items)} items; gate={'PASS' if not errors else 'BLOCK'}")
         for error in errors:
             print(f"- {error}")
+    elif args.command == "youtube-collect-stats":
+        from sqlalchemy import create_engine
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+        from .video_statistics import collect_video_statistics
+        channel = load_channels(settings.channels_file).get(args.channel)
+        if not channel or not channel.enabled or not settings.database_url.startswith("postgresql"):
+            raise ValueError("Enabled channel and PostgreSQL required")
+        credentials = Credentials.from_authorized_user_file(str(settings.youtube_token_file))
+        if credentials.expired and credentials.refresh_token:
+            credentials.refresh(Request())
+        if not credentials.valid:
+            raise ValueError("An existing valid YouTube token is required")
+        engine = create_engine(settings.database_url, pool_pre_ping=True)
+        try:
+            print(json.dumps(collect_video_statistics(engine, credentials, channel=args.channel,
+                expected_channel_id=settings.youtube_channel_id, video_id=args.video_id), indent=2))
+        finally:
+            engine.dispose()
+    elif args.command == "youtube-caption-upload":
+        from .youtube import authorize_captions, upload_caption_track
+        credentials = authorize_captions(settings.youtube_client_secrets_file, settings.youtube_caption_token_file,
+                                          settings.youtube_channel_id, existing_upload_token=settings.youtube_token_file)
+        caption_id = upload_caption_track(args.video_id, args.srt, credentials, settings.youtube_channel_id,
+                                          name=args.name, timing_reviewed=args.timing_reviewed)
+        print(f"Caption track uploaded: {caption_id}")
+        if settings.database_url.startswith("postgresql"):
+            from sqlalchemy import create_engine
+            from .caption_store import record_caption
+            engine = create_engine(settings.database_url, pool_pre_ping=True)
+            try:
+                record_caption(engine, caption_id=caption_id, video_id=args.video_id, srt=args.srt,
+                               language="en", track_name=args.name, timing_method="reviewed", status="submitted")
+                print("Caption upload recorded in PostgreSQL.")
+            except Exception as exc:
+                print(f"Caption exists on YouTube but DB recording failed ({type(exc).__name__}); do not upload again.")
+                raise
+            finally:
+                engine.dispose()
     elif args.command == "youtube-caption-auth":
         from .youtube import authorize_captions
         authorize_captions(settings.youtube_client_secrets_file, settings.youtube_caption_token_file,
@@ -80,6 +135,43 @@ def main() -> None:
         credentials = authorize(settings.youtube_client_secrets_file, settings.youtube_token_file)
         verify_channel(credentials, settings.youtube_channel_id)
         print("Authenticated YouTube channel matches configured ID.")
+    elif args.command == "trend-groups":
+        from sqlalchemy import create_engine
+        from .trend_grouping import save_latest_groups
+        channel = load_channels(settings.channels_file).get(args.channel)
+        if not channel or not channel.enabled or not settings.database_url.startswith("postgresql"):
+            raise ValueError("Enabled channel and PostgreSQL required")
+        engine = create_engine(settings.database_url, pool_pre_ping=True)
+        try:
+            collection, groups = save_latest_groups(engine, args.channel)
+            print(json.dumps({"collection_id": collection, "groups": groups,
+                              "note": "Shared links suggest related topics; event identity remains unverified."}, ensure_ascii=False, indent=2))
+        finally:
+            engine.dispose()
+    elif args.command in {"publication-enqueue", "publication-worker-once"}:
+        from sqlalchemy import create_engine
+        from .publication_queue import PublicationQueue
+        if not settings.database_url.startswith("postgresql"):
+            raise ValueError("PostgreSQL is required")
+        engine = create_engine(settings.database_url, pool_pre_ping=True)
+        try:
+            if args.command == "publication-enqueue":
+                print("Private publication job:", PublicationQueue(engine).enqueue(args.plan_id, review_note=args.review_note))
+            else:
+                from google.oauth2.credentials import Credentials
+                from google.auth.transport.requests import Request
+                from .publication_worker import run_once
+                channel = load_channels(settings.channels_file).get(args.channel)
+                if channel is None or not channel.enabled or not settings.youtube_token_file.is_file():
+                    raise ValueError("Enabled channel and an existing OAuth token are required")
+                credentials = Credentials.from_authorized_user_file(str(settings.youtube_token_file))
+                if credentials.expired and credentials.refresh_token:
+                    credentials.refresh(Request())
+                video_id = run_once(engine, args.channel, args.worker, credentials, settings.youtube_channel_id,
+                                    ffmpeg=settings.ffmpeg_bin)
+                print(f"Private upload verified: {video_id}" if video_id else "No private publication job")
+        finally:
+            engine.dispose()
     elif args.command in {"content-plan", "content-worker-once"}:
         from sqlalchemy import create_engine
         channel = load_channels(settings.channels_file).get(args.channel)

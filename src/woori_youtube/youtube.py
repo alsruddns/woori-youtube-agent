@@ -83,7 +83,7 @@ def authorize_captions(client_secrets: Path, token_file: Path, expected_channel_
         credentials.refresh(Request())
     if not credentials or not credentials.valid or not credentials.has_scopes(scopes):
         credentials = InstalledAppFlow.from_client_secrets_file(str(client_secrets), scopes).run_local_server(
-            port=port, access_type="offline", prompt="consent")
+            port=port, access_type="offline", prompt="consent", authorization_prompt_message="")
     granted = getattr(credentials, "granted_scopes", None)
     if not credentials.valid or not credentials.has_scopes(scopes) or (granted is not None and not set(scopes).issubset(granted)):
         raise PublishBlocked("Caption authorization was not granted.")

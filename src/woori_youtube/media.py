@@ -113,8 +113,9 @@ def render_video(script: dict[str, Any], audio_files: list[Path], output: Path, 
             duration = wav.getnframes() / wav.getframerate()
         if not math.isfinite(duration) or duration <= 0:
             raise ValueError(f"Scene {index} has empty narration audio.")
-        scene_cues = _scene_cues(audio, str(scene.get("narration", "")), duration)
-        subtitle_cues.extend((elapsed + start, elapsed + end, text) for start, end, text in scene_cues)
+        scene_cues = _scene_cues(audio, str(scene.get("narration", "")), duration, split_long=burn_subtitles)
+        sidecar_cues = _scene_cues(audio, str(scene.get("narration", "")), duration, split_long=False)
+        subtitle_cues.extend((elapsed + start, elapsed + end, text) for start, end, text in sidecar_cues)
         srt_path = temp / f"{index:03d}.srt"
         srt_path.write_text(_srt(scene_cues), encoding="utf-8")
         subtitle_filter_path = str(srt_path.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
@@ -128,34 +129,60 @@ def render_video(script: dict[str, Any], audio_files: list[Path], output: Path, 
         inputs = [ffmpeg, "-y", "-loop", "1", "-i", str(still_tmp), "-i", str(audio)]
         if broll:
             from .assets import validate_scene_assets
-            errors = validate_scene_assets([{"asset": broll}], allow_video=True)
+            clips = broll if isinstance(broll, list) else [broll]
+            errors = validate_scene_assets([{"asset": asset}])
             if errors:
                 raise ValueError("B-roll gate: " + "; ".join(errors))
-            if Path(broll["path"]).suffix.lower() not in {".mp4", ".mov", ".webm"}:
-                raise ValueError("B-roll must be a video file.")
-            cutaway = min(duration, 3.0, _probe_duration(Path(broll["path"]), ffmpeg))
-            label = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-            label_draw = ImageDraw.Draw(label)
-            label_draw.rectangle((0, 0, width, max(50, height // 24)), fill=(0, 0, 0, 205))
-            try:
-                label_font = ImageFont.truetype("arialbd.ttf", max(18, width // 40))
-            except OSError:
-                label_font = ImageFont.load_default(size=max(18, width // 40))
-            label_draw.text((20, 8), "ILLUSTRATIVE STOCK FOOTAGE", font=label_font, fill="white")
-            label_path = temp / f"{index:03d}-stock-label.png"
-            label.save(label_path)
-            inputs += ["-i", str(broll["path"]), "-loop", "1", "-i", str(label_path)]
+            windows = []
+            previous_end = 0.0
+            for item in clips:
+                try:
+                    start = float(item.get("start_seconds", 0))
+                    requested = float(item.get("duration_seconds", 3))
+                    source_offset = float(item.get("source_offset_seconds", 0))
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("Invalid B-roll timing") from exc
+                if (not math.isfinite(start) or not math.isfinite(requested) or not math.isfinite(source_offset)
+                        or source_offset < 0 or start < previous_end or requested <= 0 or start >= duration):
+                    raise ValueError("B-roll timing must be finite, non-overlapping, and within the scene")
+                length = min(duration - start, requested, 3.0, _probe_duration(Path(item["path"]), ffmpeg) - source_offset)
+                if length <= 0:
+                    raise ValueError("B-roll video is empty")
+                windows.append((start, start + length))
+                previous_end = start + length
+                inputs += ["-ss", f"{source_offset:.6f}", "-i", str(item["path"])]
+            for cut_index, item in enumerate(clips):
+                label = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+                label_draw = ImageDraw.Draw(label)
+                label_top = height // 12 if height > width else 0
+                label_draw.rectangle((0, label_top, width, label_top + max(50, height // 18)), fill=(0, 0, 0, 220))
+                try:
+                    label_font = ImageFont.truetype("arialbd.ttf", max(16, width // 27))
+                except OSError:
+                    label_font = ImageFont.load_default(size=max(16, width // 27))
+                label_text = ("ARCHIVE: " + item["archive_context"] if item["depiction"] == "archive"
+                              else "ILLUSTRATIVE STOCK FOOTAGE")
+                if label_draw.textlength(label_text, font=label_font) > width - 30:
+                    raise ValueError("Footage disclosure is too long to display clearly")
+                label_draw.text((15, label_top + 8), label_text, font=label_font, fill="white")
+                label_path = temp / f"{index:03d}-stock-label-{cut_index:02d}.png"
+                label.save(label_path)
+                inputs += ["-loop", "1", "-i", str(label_path)]
             # Use no source audio: the original narration is the only audio input.
-            graph = (f"[0:v]{filters}[bg];[2:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
-                     f"crop={width}:{height},fps=30,setpts=PTS-STARTPTS[stock];"
-                     f"[bg][stock]overlay=0:0:enable='lt(t,{cutaway:.3f})':eof_action=pass:repeatlast=0[tmp];"
-                     f"[tmp][3:v]overlay=0:0:enable='lt(t,{cutaway:.3f})'[labeled];"
-                     f"[labeled]{subtitles_filter if burn_subtitles else 'null'}[v]")
+            graph = f"[0:v]{filters}[base0];"
+            for cut_index, (start, end) in enumerate(windows):
+                graph += (f"[{cut_index + 2}:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
+                          f"crop={width}:{height},fps=30,setpts=PTS-STARTPTS+{start:.6f}/TB[stock{cut_index}];"
+                          f"[base{cut_index}][stock{cut_index}]overlay=0:0:enable='between(t,{start:.6f},{end:.6f})':"
+                          f"eof_action=pass:repeatlast=0[cut{cut_index}];"
+                          f"[cut{cut_index}][{len(clips) + 2 + cut_index}:v]overlay=0:0:"
+                          f"enable='between(t,{start:.6f},{end:.6f})'[base{cut_index + 1}];")
+            graph += f"[base{len(clips)}]{subtitles_filter if burn_subtitles else 'null'}[v]"
             video_args = ["-filter_complex", graph, "-map", "[v]", "-map", "1:a:0"]
         else:
             video_args = ["-vf", filters + ("," + subtitles_filter if burn_subtitles else "")]
         subprocess.run(inputs + video_args + ["-c:v", "libx264", "-r", "30", "-c:a", "aac", "-b:a", "192k",
-                        "-pix_fmt", "yuv420p", "-shortest", str(clip)], check=True, capture_output=True)
+                        "-pix_fmt", "yuv420p", "-t", f"{duration:.6f}", "-shortest", str(clip)], check=True, capture_output=True)
         rendered.append(clip)
         elapsed += _probe_duration(clip, ffmpeg)
     manifest = temp / "concat.txt"
@@ -182,7 +209,7 @@ def _probe_duration(path: Path, ffmpeg: str) -> float:
     return duration
 
 
-def _scene_cues(audio: Path, narration: str, duration: float) -> list[tuple[float, float, str]]:
+def _scene_cues(audio: Path, narration: str, duration: float, *, split_long: bool = True) -> list[tuple[float, float, str]]:
     """Use actual TTS chunk boundaries; fallback timings remain approximate."""
     timing_path = audio.with_suffix(".timings.json")
     if timing_path.exists():
@@ -195,7 +222,7 @@ def _scene_cues(audio: Path, narration: str, duration: float) -> list[tuple[floa
                            for start, end, text in cues)
                     or any(abs(a[1] - b[0]) > 0.01 for a, b in zip(cues, cues[1:]))):
                 raise ValueError("Invalid timing boundaries")
-            return _split_long_cues(cues)
+            return _split_long_cues(cues) if split_long else cues
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
             raise ValueError(f"Invalid narration timing file: {timing_path}") from exc
     words = narration.split()

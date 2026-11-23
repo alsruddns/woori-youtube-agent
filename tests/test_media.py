@@ -1,5 +1,6 @@
 import json
 import wave
+import pytest
 from types import SimpleNamespace
 from woori_youtube import media
 
@@ -36,6 +37,14 @@ def test_long_cue_is_split_within_original_audio_bounds():
     assert " ".join(cue[2] for cue in cues) == "one two three four five six seven eight nine ten"
 
 
+def test_selectable_caption_keeps_actual_tts_chunk_boundaries(tmp_path):
+    audio = tmp_path / "voice.wav"
+    text = "one two three four five six seven eight nine ten"
+    audio.with_suffix(".timings.json").write_text(json.dumps([{"start": 0, "end": 2, "text": text}]), encoding="utf-8")
+    assert media._scene_cues(audio, text, 2, split_long=False) == [(0.0, 2.0, text)]
+    assert len(media._scene_cues(audio, text, 2, split_long=True)) == 2
+
+
 def test_subtitles_can_be_exported_without_burning_into_video(tmp_path, monkeypatch):
     audio = tmp_path / "voice.wav"
     with wave.open(str(audio), "wb") as wav:
@@ -52,6 +61,7 @@ def test_subtitles_can_be_exported_without_burning_into_video(tmp_path, monkeypa
                        [audio], output, width=360, height=640, burn_subtitles=False)
     assert "Test narration" in output.with_suffix(".srt").read_text(encoding="utf-8")
     assert "subtitles=" not in calls[0][calls[0].index("-vf") + 1]
+    assert calls[0][calls[0].index("-t") + 1] == "2.000000"
 
 
 def test_broll_is_labeled_and_uses_only_narration_audio(tmp_path, monkeypatch):
@@ -78,7 +88,11 @@ def test_broll_is_labeled_and_uses_only_narration_audio(tmp_path, monkeypatch):
     media.render_video({"title": "Test", "scenes": [{"narration": "Test", "asset": asset}]},
                        [audio], tmp_path / "final.mp4", width=360, height=640, burn_subtitles=False)
     assert "1:a:0" in calls[0] and "2:a:0" not in calls[0]
-    assert (tmp_path / "render-scenes/001-stock-label.png").exists()
+    assert (tmp_path / "render-scenes/001-stock-label-00.png").exists()
+    asset["broll"] = [dict(broll, start_seconds=0), dict(broll, start_seconds=1)]
+    with pytest.raises(ValueError, match="non-overlapping"):
+        media.render_video({"title": "Test", "scenes": [{"narration": "Test", "asset": asset}]},
+                           [audio], tmp_path / "second.mp4", width=360, height=640, burn_subtitles=False)
 
 
 def test_video_quality_checks_duration_resolution_and_audio(tmp_path, monkeypatch):

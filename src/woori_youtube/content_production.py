@@ -77,6 +77,12 @@ def render_content(kind, topics, research, script, assets, output_dir: Path, *, 
         errors = validate_video_content(video, ffmpeg=ffmpeg)
     if errors:
         raise ProductionBlocked("Media gate: " + "; ".join(errors))
+    from .subtitle_alignment import align_tts_subtitles
+    aligned_srt = output_dir / "final.aligned.srt"
+    try:
+        alignment = align_tts_subtitles(video, audio, aligned_srt, ffmpeg=ffmpeg)
+    except (ValueError, OSError) as exc:
+        raise ProductionBlocked("Subtitle alignment gate: " + str(exc)) from exc
     if thumbnail_asset is not None:
         from .visual_cards import create_news_thumbnail
         thumbnail = create_news_thumbnail(output_dir / "thumbnail.jpg", background=Path(thumbnail_asset["path"]),
@@ -84,6 +90,8 @@ def render_content(kind, topics, research, script, assets, output_dir: Path, *, 
     else:
         thumbnail = create_thumbnail(script["title"], output_dir / "thumbnail.jpg", subtitle="NOW TRENDS")
     report.update({"video": str(video), "thumbnail": str(thumbnail),
-                   "video_seconds": _probe_duration(video, ffmpeg), "automated_media_checks_passed": True})
+                   "video_seconds": _probe_duration(video, ffmpeg), "automated_media_checks_passed": True,
+                   "aligned_srt": str(aligned_srt), "caption_alignment": alignment,
+                   "caption_editorial_review_required": True})
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report

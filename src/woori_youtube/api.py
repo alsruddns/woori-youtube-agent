@@ -151,6 +151,63 @@ def retry_content_plan(plan_id: UUID, request: Request):
     return {"plan_id": str(plan_id), "status": "planned", "note": "A worker must be started separately."}
 
 
+@app.get("/api/publication-jobs")
+def publication_jobs(channel: str = "us-economy", limit: int = 50):
+    if channel not in load_channels(settings.channels_file):
+        raise HTTPException(404, "Channel not found")
+    if not settings.database_url.startswith("postgresql"):
+        raise HTTPException(503, "PostgreSQL is required")
+    from sqlalchemy import create_engine, text
+    engine = create_engine(settings.database_url, pool_pre_ping=True)
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text("""SELECT publication_id,plan_id,status,privacy,youtube_video_id,error,
+                attempts,created_at,updated_at FROM publication_jobs WHERE channel_id=:channel
+                ORDER BY created_at DESC LIMIT :limit"""),
+                {"channel": channel, "limit": max(1, min(limit, 200))}).mappings()
+            return [dict(row) for row in rows]
+    finally:
+        engine.dispose()
+
+
+@app.get("/api/caption-tracks")
+def caption_tracks(channel: str = "us-economy", limit: int = 50):
+    if channel not in load_channels(settings.channels_file):
+        raise HTTPException(404, "Channel not found")
+    if not settings.database_url.startswith("postgresql"):
+        raise HTTPException(503, "PostgreSQL is required")
+    from sqlalchemy import create_engine, text
+    engine = create_engine(settings.database_url, pool_pre_ping=True)
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text("""SELECT c.video_id,c.language,c.track_name,c.status,c.timing_method,c.created_at
+                FROM caption_tracks c JOIN content_plans p ON p.plan_id=c.plan_id WHERE p.channel_id=:channel
+                ORDER BY c.created_at DESC LIMIT :limit"""),
+                {"channel": channel, "limit": max(1, min(limit, 200))}).mappings()
+            return [dict(row) for row in rows]
+    finally:
+        engine.dispose()
+
+
+@app.get("/api/video-statistics")
+def video_statistics(channel: str = "us-economy", limit: int = 50):
+    if channel not in load_channels(settings.channels_file):
+        raise HTTPException(404, "Channel not found")
+    if not settings.database_url.startswith("postgresql"):
+        raise HTTPException(503, "PostgreSQL is required")
+    from sqlalchemy import create_engine, text
+    engine = create_engine(settings.database_url, pool_pre_ping=True)
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text("""SELECT s.video_id,p.content_type,s.view_count,s.like_count,
+                s.comment_count,s.collected_at FROM video_statistics s JOIN content_plans p ON p.plan_id=s.plan_id
+                WHERE p.channel_id=:channel ORDER BY s.collected_at DESC LIMIT :limit"""),
+                {"channel": channel, "limit": max(1, min(limit, 200))}).mappings()
+            return [dict(row) for row in rows]
+    finally:
+        engine.dispose()
+
+
 @app.get("/api/jobs")
 def jobs(limit: int = 50):
     return app.state.store.list_jobs(max(1, min(limit, 200)))
@@ -173,7 +230,9 @@ def dashboard():
     <style>body{{font:15px system-ui;margin:3rem;background:#101827;color:#e5e7eb}}table{{border-collapse:collapse;width:100%}}td,th{{padding:.7rem;border-bottom:1px solid #334155;text-align:left}}.pill{{color:#7dd3fc}}</style></head>
     <body><h1>Woori YouTube Agent</h1><p class='pill'>Automatic three-format production is not yet enabled.</p>
     <h2>Now Trends content settings</h2><div id='settings'>Loading…</div><p id='message'></p>
-    <h2>Content plans</h2><div id='plans'>Loading…</div><h2>Legacy jobs</h2><table><thead><tr><th>Channel</th><th>Date</th><th>Status</th><th>Attempts</th><th>Error</th></tr></thead><tbody>{table}</tbody></table>
+    <h2>Content plans</h2><div id='plans'>Loading…</div><h2>Private upload jobs</h2><pre id='publications'>Loading…</pre>
+    <h2>Recorded captions</h2><pre id='captions'>Loading…</pre><h2>YouTube Data API statistics</h2><pre id='statistics'>Loading…</pre>
+    <h2>Legacy jobs</h2><table><thead><tr><th>Channel</th><th>Date</th><th>Status</th><th>Attempts</th><th>Error</th></tr></thead><tbody>{table}</tbody></table>
     <script>
     async function load() {{
       const specs = await (await fetch('/api/content-types')).json();
@@ -193,8 +252,8 @@ def dashboard():
       }}
       const plans = await (await fetch('/api/content-plans')).json();
       const list = document.getElementById('plans'); list.replaceChildren();
-      if (!Array.isArray(plans) || !plans.length) {{ list.textContent = 'No content plans.'; return; }}
-      for (const plan of plans) {{
+      if (!Array.isArray(plans) || !plans.length) {{ list.textContent = 'No content plans.'; }}
+      for (const plan of Array.isArray(plans) ? plans : []) {{
         const row = document.createElement('div'); const details = document.createElement('pre');
         details.textContent = JSON.stringify(plan, null, 2); row.append(details);
         if (['blocked','failed'].includes(plan.status) && !plan.youtube_video_id) {{
@@ -203,6 +262,11 @@ def dashboard():
             document.getElementById('message').textContent = r.ok ? 'Queued for retry; start a worker separately.' : 'Retry was not allowed.'; if (r.ok) load(); }};
           row.append(button);
         }} list.append(row);
+      }}
+      for (const endpoint of ['publication-jobs','caption-tracks','video-statistics']) {{
+        const data = await (await fetch('/api/' + endpoint)).json();
+        const target = endpoint === 'publication-jobs' ? 'publications' : endpoint === 'caption-tracks' ? 'captions' : 'statistics';
+        document.getElementById(target).textContent = JSON.stringify(data, null, 2);
       }}
     }} load().catch(() => document.getElementById('message').textContent = 'Unable to load status.');
     </script></body></html>"""
