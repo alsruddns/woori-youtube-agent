@@ -124,7 +124,7 @@ def content_plans(channel: str = "us-economy", limit: int = 50):
     engine = create_engine(settings.database_url, pool_pre_ping=True)
     try:
         with engine.connect() as conn:
-            rows = conn.execute(text("""SELECT plan_id,content_type,status,stage,topics,duration_seconds,video_path,
+            rows = conn.execute(text("""SELECT plan_id,content_type,status,stage,topics,ranking_snapshot,duration_seconds,video_path,
                 youtube_video_id,error,attempts,created_at,updated_at FROM content_plans
                 WHERE channel_id=:channel ORDER BY created_at DESC LIMIT :limit"""),
                 {"channel": channel, "limit": max(1, min(limit, 200))}).mappings()

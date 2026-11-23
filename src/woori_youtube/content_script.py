@@ -2,17 +2,29 @@
 import json
 import re
 
-from .content_types import ContentType, SPECS, validate_topics, verified_top5
+from .content_types import ContentType, SPECS, validate_topics, compilation_selection
 from .event_script import validate_event_research
 
 
-def content_script_prompt(content_type: ContentType, topics: list[dict], research: dict) -> str:
+def content_script_prompt(content_type: ContentType, topics: list[dict], research: dict, *, ranking_basis=None, period=None) -> str:
     kind = ContentType(content_type)
     validate_topics(kind, topics)
+    selection = compilation_selection(topics, period=period, ranking_basis=ranking_basis) if kind == ContentType.TOP5_SHORT else None
+    compilation_instruction = ""
+    if selection:
+        if selection["mode"] in {"UNRANKED_HIGHLIGHTS", "VOLUME_BUCKET_ORDERED"}:
+            compilation_instruction = (f"Cover {len(topics)} selected stories without rankings, ordinals or countdown graphics. "
+                f"Description must include exactly: {selection['disclosure']}")
+        elif selection["mode"] == "EDITORIAL_COUNTDOWN":
+            compilation_instruction = ("Count down the editorial selections from 5 to 1. The first scene's on_screen_text must include "
+                "NOW TRENDS EDITORIAL SELECTION. Description must include exactly: "
+                "Now Trends editorial selection; not an official Google ranking.")
+        else:
+            compilation_instruction = "Count down the verified distinct ranks from 5 to 1."
     format_instruction = {
         ContentType.MAIN_NEWS: "Write an original anchor-style briefing with an opening preview, transitions, a substantive section per event, and a concise recap.",
         ContentType.SINGLE_SHORT: "Write an original concise vertical short focused on this single event, with a factual hook and no long intro.",
-        ContentType.TOP5_SHORT: "Write a vertical countdown with exactly one scene for each rank in the order 5, 4, 3, 2, 1. Do not invent ranks.",
+        ContentType.TOP5_SHORT: compilation_instruction,
     }[kind]
     spec = SPECS[kind]
     return (f"{format_instruction} Target {spec.target_seconds} seconds, acceptable {spec.min_seconds}–{spec.max_seconds} seconds. "
@@ -24,7 +36,7 @@ def content_script_prompt(content_type: ContentType, topics: list[dict], researc
             "Include source URLs in the description. Draft the script now when the supplied facts are sufficient; "
             "the application will measure audio duration and arrange independent review later. "
             "Do not report insufficient evidence merely because those later stages are not yet complete.\n" +
-            json.dumps({"topics": topics, "research": research}, ensure_ascii=False, indent=2))
+            json.dumps({"topics": selection["items"] if selection else topics, "research": research}, ensure_ascii=False, indent=2))
 
 
 def validate_content_inputs(content_type: ContentType, topics: list[dict], research: dict,
@@ -33,7 +45,7 @@ def validate_content_inputs(content_type: ContentType, topics: list[dict], resea
     try:
         validate_topics(kind, topics)
         if kind == ContentType.TOP5_SHORT:
-            verified_top5(topics, period=period, ranking_basis=ranking_basis)
+            compilation_selection(topics, period=period, ranking_basis=ranking_basis)
     except ValueError as exc:
         return [str(exc)]
     errors = []
@@ -99,7 +111,30 @@ def validate_content_script(content_type: ContentType, topics: list[dict], resea
     if not minimum <= words <= maximum:
         errors.append(f"Narration has {words} words; expected {minimum}–{maximum} before measuring audio.")
     if kind == ContentType.TOP5_SHORT:
-        rank_events = {item["rank"]: item["event_key"] for item in topics}
-        if [rank for rank, _ in ranks] != [5, 4, 3, 2, 1] or any(events != [rank_events.get(rank)] for rank, events in ranks):
-            errors.append("Countdown scenes must match the verified event at ranks 5, 4, 3, 2, 1.")
+        selection = compilation_selection(topics, period=period, ranking_basis=ranking_basis)
+        if selection["mode"] in {"UNRANKED_HIGHLIGHTS", "VOLUME_BUCKET_ORDERED"}:
+            spoken = " ".join(str(scene.get("narration", "")) + " " + str(scene.get("on_screen_text", "")) for scene in scenes if isinstance(scene, dict))
+            all_text = f"{script.get('title', '')} {script.get('description', '')} {spoken}"
+            if ranks or re.search(r"(?i)(?:#\s*[1-5]\b|\b(?:ranked|ranking|number\s+(?:one|two|three|four|five)|(?:first|second|third|fourth|fifth)\s+place|top\s*5)\b)", all_text.replace("not an official ranking", "")):
+                errors.append("Unranked highlights must not claim a ranking or use rank graphics.")
+            if selection["disclosure"] not in str(script.get("description", "")):
+                errors.append("Unranked highlights need the non-ranking disclosure.")
+            if selection["mode"] == "VOLUME_BUCKET_ORDERED":
+                order = []
+                for scene in scenes:
+                    if isinstance(scene, dict):
+                        for key in scene.get("event_keys", []):
+                            if key not in order:
+                                order.append(key)
+                if order != [item["event_key"] for item in selection["items"]]:
+                    errors.append("Volume-bucket highlights must follow the recorded bucket order.")
+        else:
+            rank_events = {item["rank"]: item["event_key"] for item in topics}
+            if [rank for rank, _ in ranks] != [5, 4, 3, 2, 1] or any(events != [rank_events.get(rank)] for rank, events in ranks):
+                errors.append("Countdown scenes must match the selected event at ranks 5, 4, 3, 2, 1.")
+            if selection["mode"] == "EDITORIAL_COUNTDOWN":
+                if selection["disclosure"] not in str(script.get("description", "")):
+                    errors.append("Editorial countdown requires its ranking disclosure.")
+                if not isinstance(scenes[0], dict) or "NOW TRENDS EDITORIAL SELECTION" not in str(scenes[0].get("on_screen_text", "")):
+                    errors.append("Editorial selection label must be visible in the first scene.")
     return errors

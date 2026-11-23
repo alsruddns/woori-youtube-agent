@@ -180,3 +180,36 @@ def upload_thumbnail(video_id: str, thumbnail: Path, credentials: Any) -> None:
         raise FileNotFoundError(thumbnail)
     youtube = build("youtube", "v3", credentials=credentials)
     youtube.thumbnails().set(videoId=video_id, media_body=MediaFileUpload(str(thumbnail))).execute()
+
+
+def upload_caption_track(video_id: str, srt: Path, credentials: Any, expected_channel_id: str, *,
+                         language: str = "en", name: str = "English", timing_reviewed: bool = False) -> str:
+    """Upload a reviewed SRT once; an existing same-name track needs manual reconciliation."""
+    if not timing_reviewed:
+        raise PublishBlocked("Subtitle timing must be reviewed before uploading captions.")
+    if not video_id.strip() or not srt.is_file() or srt.suffix.lower() != ".srt":
+        raise ValueError("An existing SRT file and video ID are required")
+    if srt.stat().st_size > 100_000_000:
+        raise ValueError("Caption file exceeds YouTube's 100 MB limit")
+    if not re.search(r"(?m)^\d{2}:\d{2}:\d{2},\d{3}\s+-->\s+\d{2}:\d{2}:\d{2},\d{3}", srt.read_text(encoding="utf-8-sig")):
+        raise ValueError("Caption file contains no valid SRT timecodes")
+    scope = "https://www.googleapis.com/auth/youtube.force-ssl"
+    if not credentials or not credentials.has_scopes([scope]):
+        raise PublishBlocked("Caption upload requires separate YouTube force-ssl OAuth consent.")
+    verify_channel(credentials, expected_channel_id)
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaFileUpload
+    youtube = build("youtube", "v3", credentials=credentials)
+    video = youtube.videos().list(part="snippet", id=video_id).execute().get("items", [])
+    if len(video) != 1 or video[0].get("snippet", {}).get("channelId") != expected_channel_id:
+        raise PublishBlocked("Video does not belong to the configured channel.")
+    tracks = youtube.captions().list(part="snippet", videoId=video_id).execute().get("items", [])
+    if any(track.get("snippet", {}).get("language") == language and track.get("snippet", {}).get("name") == name for track in tracks):
+        raise PublishBlocked("A caption track with this language and name already exists; inspect it before retrying.")
+    body = {"snippet": {"videoId": video_id, "language": language, "name": name, "isDraft": False}}
+    result = youtube.captions().insert(part="snippet", body=body,
+        media_body=MediaFileUpload(str(srt), mimetype="application/octet-stream", resumable=False)).execute()
+    caption_id = result.get("id")
+    if not caption_id:
+        raise PublishBlocked("Caption result is uncertain; inspect YouTube Studio before retrying.")
+    return caption_id

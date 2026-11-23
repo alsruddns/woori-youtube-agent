@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -13,6 +14,8 @@ from .store import JobStore
 
 
 def main() -> None:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(prog="woori-youtube")
     sub = parser.add_subparsers(dest="command", required=True)
     research = sub.add_parser("research")
@@ -47,6 +50,7 @@ def main() -> None:
     content_render.add_argument("--assets", required=True, type=Path)
     content_render.add_argument("--output-dir", required=True, type=Path)
     content_render.add_argument("--thumbnail-asset", type=Path)
+    content_render.add_argument("--audio-profile", choices=["original_preview", "off"], default="original_preview")
     content_plan = sub.add_parser("content-plan")
     content_plan.add_argument("--channel", default="us-economy")
     content_plan.add_argument("--collection-id", required=True, type=int)
@@ -79,11 +83,28 @@ def main() -> None:
         try:
             if args.command == "content-plan":
                 from .content_plans import create_plan
+                from .content_types import ContentType, fallback_format
                 payload = json.loads(args.input.read_text(encoding="utf-8"))
+                converted = False
+                if payload["content_type"] == ContentType.TOP5_SHORT:
+                    effective = fallback_format(payload["topics"])
+                    if effective == ContentType.SINGLE_SHORT:
+                        payload["content_type"] = effective.value
+                        payload.pop("script", None)
+                        payload.pop("assets", None)
+                        payload.pop("ranking_basis", None)
+                        payload.pop("period", None)
+                        converted = True
                 plan_id = create_plan(engine, args.channel, payload["content_type"], args.collection_id,
                                       payload["topics"], period=payload.get("period"),
-                                      ranking_basis=payload.get("ranking_basis"))
+                                      ranking_basis=payload.get("ranking_basis"),
+                                      fallback_reason="Only one eligible event; create an independent single short." if converted else None)
                 print(f"Created content plan: {plan_id}")
+                if converted:
+                    prepared = settings.artifacts_dir / args.channel / "prepared" / f"{plan_id}.json"
+                    prepared.parent.mkdir(parents=True, exist_ok=True)
+                    prepared.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+                    print(f"Converted to SINGLE_SHORT; create its independent script and assets in: {prepared}")
             else:
                 from .content_worker import run_once
                 plan_id = run_once(engine, args.channel, channel.country, args.type, args.worker,
@@ -100,7 +121,8 @@ def main() -> None:
                                          period=payload.get("period"), ranking_basis=payload.get("ranking_basis"))
         if errors:
             raise ValueError("Input gate: " + "; ".join(errors))
-        raw = run_codex(content_script_prompt(payload["content_type"], payload["topics"], payload["research"]),
+        raw = run_codex(content_script_prompt(payload["content_type"], payload["topics"], payload["research"],
+                                             period=payload.get("period"), ranking_basis=payload.get("ranking_basis")),
                         args.output, command=settings.codex_command, timeout=settings.codex_timeout_seconds)
         errors = validate_content_script(payload["content_type"], payload["topics"], payload["research"], raw,
                                          period=payload.get("period"), ranking_basis=payload.get("ranking_basis"))
@@ -117,7 +139,8 @@ def main() -> None:
             json.loads(args.script.read_text(encoding="utf-8")), json.loads(args.assets.read_text(encoding="utf-8")),
             args.output_dir, ffmpeg=settings.ffmpeg_bin, period=payload.get("period"),
             ranking_basis=payload.get("ranking_basis"),
-            thumbnail_asset=json.loads(args.thumbnail_asset.read_text(encoding="utf-8")) if args.thumbnail_asset else None)
+            thumbnail_asset=json.loads(args.thumbnail_asset.read_text(encoding="utf-8")) if args.thumbnail_asset else None,
+            audio_profile=args.audio_profile)
         print(json.dumps(result, indent=2))
     elif args.command == "event-render":
         from .event_production import render_event

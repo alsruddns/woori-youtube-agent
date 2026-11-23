@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from woori_youtube.youtube import PublishBlocked, upload_video
+from woori_youtube.youtube import PublishBlocked, upload_video, upload_caption_track
 
 
 def test_public_upload_is_blocked_until_preflight_flag(tmp_path):
@@ -70,3 +70,46 @@ def test_missing_chunk_acknowledgement_blocks_instead_of_assuming_success(tmp_pa
     path.write_bytes(b"video")
     with pytest.raises(PublishBlocked, match="did not advance"):
         upload_video(path, {"title": "title", "description": "description"}, None)
+
+
+def test_caption_upload_requires_review_and_additional_scope(tmp_path):
+    srt = tmp_path / "caption.srt"
+    srt.write_text("1\n00:00:00,000 --> 00:00:02,000\nHello\n", encoding="utf-8")
+    with pytest.raises(PublishBlocked, match="timing"):
+        upload_caption_track("video", srt, None, "channel")
+    class Credentials:
+        def has_scopes(self, scopes): return False
+    with pytest.raises(PublishBlocked, match="force-ssl"):
+        upload_caption_track("video", srt, Credentials(), "channel", timing_reviewed=True)
+
+
+def test_caption_upload_checks_channel_and_existing_tracks(tmp_path, monkeypatch):
+    import googleapiclient.discovery
+    from woori_youtube import youtube as module
+    srt = tmp_path / "caption.srt"
+    srt.write_text("1\n00:00:00,000 --> 00:00:02,000\nHello\n", encoding="utf-8")
+    class Credentials:
+        def has_scopes(self, scopes): return True
+    class Request:
+        def __init__(self, result): self.result = result
+        def execute(self): return self.result
+    class Service:
+        existing = False
+        inserts = 0
+        def videos(self): return self
+        def captions(self): return self
+        def list(self, **kwargs):
+            if "id" in kwargs:
+                return Request({"items": [{"snippet": {"channelId": "channel"}}]})
+            return Request({"items": [{"snippet": {"language": "en", "name": "English"}}] if self.existing else []})
+        def insert(self, **kwargs):
+            self.inserts += 1
+            return Request({"id": "caption-id"})
+    service = Service()
+    monkeypatch.setattr(module, "verify_channel", lambda *args: None)
+    monkeypatch.setattr(googleapiclient.discovery, "build", lambda *args, **kwargs: service)
+    assert upload_caption_track("video", srt, Credentials(), "channel", timing_reviewed=True) == "caption-id"
+    service.existing = True
+    with pytest.raises(PublishBlocked, match="already exists"):
+        upload_caption_track("video", srt, Credentials(), "channel", timing_reviewed=True)
+    assert service.inserts == 1

@@ -52,6 +52,18 @@ def create_vertical_card(output: Path, *, headline: str, subtitle: str, label: s
         draw.rounded_rectangle((65, 900, 1015, 1180), radius=35, fill="#163850", outline="#f5c65a", width=4)
         draw.text((100, 940), "LOW-LYING AREAS", font=_font(55, True), fill="#ffe294")
         draw.text((100, 1040), "Flooding possible", font=_font(42), fill="white")
+    elif style == "sport":
+        draw.rounded_rectangle((65, 780, 1015, 1200), radius=35, fill="#142d48", outline="#ffe500", width=5)
+        draw.text((105, 850), "CHARLOTTE", font=_font(48, True), fill="white")
+        draw.text((105, 940), "CHICAGO", font=_font(48, True), fill="white")
+        draw.text((790, 825), "2", font=_font(95, True), fill="#ffe500")
+        draw.text((790, 925), "1", font=_font(95, True), fill="white")
+    elif style == "rocket":
+        draw.polygon([(540, 730), (660, 900), (660, 1130), (420, 1130), (420, 900)],
+                     fill="#d8e6ef", outline="#72ddf2", width=5)
+        draw.ellipse((490, 870, 590, 970), fill="#128db1")
+        draw.polygon([(465, 1130), (615, 1130), (540, 1300)], fill="#ffb839")
+        draw.text((120, 1240), "ILLUSTRATIVE LAUNCH", font=_font(30, True), fill="#b6d4dc")
     else:
         raise ValueError("Unsupported visual card style")
     draw.rounded_rectangle((55, 1600, 1025, 1740), radius=24, fill=(5, 20, 37, 225))
