@@ -46,6 +46,15 @@ def main() -> None:
     content_render.add_argument("--script", required=True, type=Path)
     content_render.add_argument("--assets", required=True, type=Path)
     content_render.add_argument("--output-dir", required=True, type=Path)
+    content_plan = sub.add_parser("content-plan")
+    content_plan.add_argument("--channel", default="us-economy")
+    content_plan.add_argument("--collection-id", required=True, type=int)
+    content_plan.add_argument("--input", required=True, type=Path)
+    content_worker = sub.add_parser("content-worker-once")
+    content_worker.add_argument("--channel", default="us-economy")
+    content_worker.add_argument("--type", required=True, choices=["MAIN_NEWS", "SINGLE_SHORT", "TOP5_SHORT"])
+    content_worker.add_argument("--worker", required=True)
+    content_worker.add_argument("--input-root", required=True, type=Path)
     sub.add_parser("status")
     args = parser.parse_args()
     if args.command == "research":
@@ -60,6 +69,28 @@ def main() -> None:
         credentials = authorize(settings.youtube_client_secrets_file, settings.youtube_token_file)
         verify_channel(credentials, settings.youtube_channel_id)
         print("Authenticated YouTube channel matches configured ID.")
+    elif args.command in {"content-plan", "content-worker-once"}:
+        from sqlalchemy import create_engine
+        channel = load_channels(settings.channels_file).get(args.channel)
+        if channel is None or not channel.enabled or not settings.database_url.startswith("postgresql"):
+            raise ValueError("An enabled channel and PostgreSQL are required")
+        engine = create_engine(settings.database_url, pool_pre_ping=True)
+        try:
+            if args.command == "content-plan":
+                from .content_plans import create_plan
+                payload = json.loads(args.input.read_text(encoding="utf-8"))
+                plan_id = create_plan(engine, args.channel, payload["content_type"], args.collection_id,
+                                      payload["topics"], period=payload.get("period"),
+                                      ranking_basis=payload.get("ranking_basis"))
+                print(f"Created content plan: {plan_id}")
+            else:
+                from .content_worker import run_once
+                plan_id = run_once(engine, args.channel, channel.country, args.type, args.worker,
+                                   args.input_root, settings.artifacts_dir / args.channel / "content",
+                                   ffmpeg=settings.ffmpeg_bin)
+                print(f"Ready for editorial review: {plan_id}" if plan_id else "No planned content")
+        finally:
+            engine.dispose()
     elif args.command == "content-script":
         from .content_script import content_script_prompt, validate_content_inputs, validate_content_script
         from .script import run_codex

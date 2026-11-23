@@ -41,3 +41,46 @@ def test_type_scoped_dedup_and_ranking_snapshot():
         finally:
             tx.rollback()
     engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("TEST_POSTGRES_URL"), reason="TEST_POSTGRES_URL not set")
+def test_queue_claim_isolation_lease_recovery_and_retry():
+    from sqlalchemy import create_engine, text
+    from woori_youtube.content_queue import ContentQueue
+    engine = create_engine(os.environ["TEST_POSTGRES_URL"])
+    with engine.connect() as conn:
+        tx = conn.begin()
+        class TransactionEngine:
+            @contextmanager
+            def begin(self):
+                yield conn
+        channel = str(uuid4())
+        try:
+            collection = conn.execute(text("""INSERT INTO trend_collections
+                (channel_id,region,collected_at,success) VALUES (:channel,'US',now(),true) RETURNING id"""),
+                {"channel": channel}).scalar_one()
+            conn.execute(text("INSERT INTO trend_observations(collection_id,keyword,news_urls) VALUES (:id,'test','[]')"), {"id": collection})
+            conn.execute(text("INSERT INTO trend_observations(collection_id,keyword,news_urls) VALUES (:id,'test2','[]')"), {"id": collection})
+            db = TransactionEngine()
+            plan = create_plan(db, channel, ContentType.SINGLE_SHORT, collection, [{"event_key": "event", "keyword": "test"}])
+            create_plan(db, channel, ContentType.SINGLE_SHORT, collection, [{"event_key": "event2", "keyword": "test2"}])
+            conn.execute(text("UPDATE content_plans SET created_at=now()-interval '1 second' WHERE plan_id=:id"), {"id": plan})
+            queue = ContentQueue(db)
+            assert queue.claim(channel, ContentType.MAIN_NEWS, "worker") is None
+            assert queue.claim(channel, ContentType.SINGLE_SHORT, "worker")["plan_id"] == plan
+            assert queue.claim(channel, ContentType.SINGLE_SHORT, "other") is None
+            with pytest.raises(ValueError, match="owned"):
+                queue.transition(plan, "other", status="blocked", stage="review")
+            conn.execute(text("UPDATE content_plans SET lease_expires_at=now()-interval '1 second' WHERE plan_id=:id"), {"id": plan})
+            assert queue.recover_expired(channel) == 1
+            other = queue.claim(channel, ContentType.SINGLE_SHORT, "worker")
+            assert other and other["plan_id"] != plan
+            queue.transition(other["plan_id"], "worker", status="blocked", stage="review")
+            queue.retry(plan)
+            assert queue.claim(channel, ContentType.SINGLE_SHORT, "worker")["plan_id"] == plan
+            queue.ready_for_review(plan, "worker", script={"title": "test"}, video_path="test.mp4", duration_seconds=34)
+            with pytest.raises(ValueError, match="blocked or failed"):
+                queue.retry(plan)
+        finally:
+            tx.rollback()
+    engine.dispose()

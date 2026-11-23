@@ -7,7 +7,7 @@ from .assets import validate_scene_assets
 from .content_script import validate_content_script
 from .content_types import ContentType, SPECS
 from .event_production import ProductionBlocked
-from .media import create_thumbnail, render_video, synthesize_scenes, validate_video, validate_video_content
+from .media import _probe_duration, create_thumbnail, render_video, synthesize_scenes, validate_video, validate_video_content
 
 
 def render_content(kind, topics, research, script, assets, output_dir: Path, *, ffmpeg: str,
@@ -47,6 +47,7 @@ def render_content(kind, topics, research, script, assets, output_dir: Path, *, 
     if errors:
         raise ProductionBlocked("Media gate: " + "; ".join(errors))
     thumbnail = create_thumbnail(script["title"], output_dir / "thumbnail.jpg", subtitle="NOW TRENDS")
-    report.update({"video": str(video), "thumbnail": str(thumbnail), "automated_media_checks_passed": True})
+    report.update({"video": str(video), "thumbnail": str(thumbnail),
+                   "video_seconds": _probe_duration(video, ffmpeg), "automated_media_checks_passed": True})
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return report
