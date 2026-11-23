@@ -4,6 +4,7 @@ import json
 import math
 import shutil
 import subprocess
+import wave
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +58,8 @@ def render_video(script: dict[str, Any], audio_files: list[Path], output: Path, 
     scenes = script["scenes"]
     if len(scenes) != len(audio_files):
         raise ValueError("Each scene must have a corresponding narration audio file.")
+    if not scenes:
+        raise ValueError("At least one scene is required.")
     output.parent.mkdir(parents=True, exist_ok=True)
     temp = output.parent / "render-scenes"
     temp.mkdir(exist_ok=True)
@@ -64,7 +67,6 @@ def render_video(script: dict[str, Any], audio_files: list[Path], output: Path, 
     subtitle_cues: list[tuple[float, float, str]] = []
     elapsed = 0.0
     for index, (scene, audio) in enumerate(zip(scenes, audio_files), start=1):
-        still = temp / f"{index:03d}.png"
         # Text cards avoid unlicensed news footage; later scene assets can replace these.
         from PIL import Image, ImageDraw, ImageFont
         image = Image.new("RGB", (width, height), "#101827")
@@ -75,7 +77,10 @@ def render_video(script: dict[str, Any], audio_files: list[Path], output: Path, 
         still_tmp = temp / f"{index:03d}.png"
         image.save(still_tmp)
         clip = temp / f"{index:03d}.mp4"
-        duration = max(1, int(scene.get("duration_seconds", 1)))
+        with wave.open(str(audio), "rb") as wav:
+            duration = wav.getnframes() / wav.getframerate()
+        if not math.isfinite(duration) or duration <= 0:
+            raise ValueError(f"Scene {index} has empty narration audio.")
         words = str(scene.get("narration", "")).split()
         group_size = 9
         groups = [words[offset:offset + group_size] for offset in range(0, len(words), group_size)] or [[]]
@@ -87,13 +92,14 @@ def render_video(script: dict[str, Any], audio_files: list[Path], output: Path, 
         subtitle_filter_path = str(srt_path.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
         subprocess.run([ffmpeg, "-y", "-loop", "1", "-i", str(still_tmp), "-i", str(audio), "-c:v", "libx264",
                         "-tune", "stillimage", "-vf", f"subtitles='{subtitle_filter_path}':force_style='Fontsize=22,Outline=2,MarginV=45'",
-                        "-c:a", "aac", "-b:a", "192k", "-pix_fmt", "yuv420p", "-shortest", str(clip)],
+                        "-r", "30", "-c:a", "aac", "-b:a", "192k", "-pix_fmt", "yuv420p", "-shortest", str(clip)],
                        check=True, capture_output=True)
         rendered.append(clip)
         elapsed += duration
     manifest = temp / "concat.txt"
     manifest.write_text("\n".join(f"file '{p.name}'" for p in rendered), encoding="utf-8")
     subprocess.run([ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(manifest), "-c", "copy", str(output)], check=True, capture_output=True)
+    output.with_suffix(".srt").write_text(_srt(subtitle_cues), encoding="utf-8")
     return output
 
 

@@ -58,4 +58,6 @@ Migration `0003_production_queue` adds an event-keyed queue with transactional c
 
 FFmpeg validation checks duration, video resolution, and presence of an audio stream; these checks do not establish audible narration, synchronized subtitles, media rights, factual accuracy, or video integrity. Human and additional automated checks remain necessary.
 
+The renderer bases approximate subtitle cue timing on the actual WAV duration and writes a sidecar SRT. It distributes words evenly within each scene; this is not word-level alignment and needs review. The existing text-card renderer is a technical prototype, not a completed visual production or quality gate.
+
 Install the collection-only scheduled task with `scripts/install-trends-scheduler.ps1` after the database and migrations are ready. It runs every 30 minutes, prevents overlapping instances, and logs under the ignored `data/` directory. It does not create or publish videos. Run `Unregister-ScheduledTask -TaskName WooriYouTubeAgent-Trends` to remove it. Python 3.12 is required for the current Kokoro dependency.
